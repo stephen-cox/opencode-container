@@ -4,7 +4,8 @@ set -euo pipefail
 OPENCODE_HOSTNAME="${OPENCODE_HOSTNAME:-0.0.0.0}"
 OPENCODE_PORT="${OPENCODE_PORT:-4096}"
 OPENCHAMBER_PORT="${OPENCHAMBER_PORT:-3000}"
-SSHD_PORT="${SSHD_PORT:-2222}"
+WEB_TERMINAL_PORT="${WEB_TERMINAL_PORT:-7681}"
+WEB_TERMINAL_USER="${WEB_TERMINAL_USER:-dev}"
 OPENCODE_READY_TIMEOUT="${OPENCODE_READY_TIMEOUT:-30}"
 
 if [ -z "${OPENCHAMBER_PASSWORD:-}" ]; then
@@ -12,16 +13,19 @@ if [ -z "${OPENCHAMBER_PASSWORD:-}" ]; then
     exit 1
 fi
 
-if [ ! -s "${HOME}/.ssh/authorized_keys" ]; then
-    echo "ERROR: ${HOME}/.ssh/authorized_keys is missing or empty; sshd allows key auth only" >&2
-    exit 1
+# The web terminal is a root-equivalent shell (dev has passwordless sudo), so it
+# never starts unauthenticated. Falling back to OPENCHAMBER_PASSWORD keeps
+# single-secret deployments working.
+if [ -z "${WEB_TERMINAL_PASSWORD:-}" ]; then
+    echo "[start] WEB_TERMINAL_PASSWORD unset; reusing OPENCHAMBER_PASSWORD for the web terminal"
+    WEB_TERMINAL_PASSWORD="${OPENCHAMBER_PASSWORD}"
 fi
 
 mkdir -p /tmp/logs
 cd /workspace
 
 dump_logs() {
-    for log in /tmp/logs/opencode.log /tmp/logs/openchamber.log /tmp/logs/sshd.log /tmp/logs/ssh-agent.log; do
+    for log in /tmp/logs/opencode.log /tmp/logs/openchamber.log /tmp/logs/ttyd.log /tmp/logs/ssh-agent.log; do
         if [ -f "${log}" ]; then
             echo "==> ${log} <=="
             sed -n '1,200p' "${log}" || true
@@ -72,23 +76,30 @@ ssh-agent -D -a /home/dev/.ssh-agent.sock \
     >/tmp/logs/ssh-agent.log 2>&1 &
 ssh_agent_pid=$!
 
-echo "[start] sshd on :${SSHD_PORT}"
-sudo mkdir -p /run/sshd /etc/ssh/host-keys
-if [ ! -f /etc/ssh/host-keys/ssh_host_ed25519_key ]; then
-    sudo ssh-keygen -q -t ed25519 -f /etc/ssh/host-keys/ssh_host_ed25519_key -N ''
-fi
-sudo /usr/sbin/sshd -D -e -p "${SSHD_PORT}" \
-    >/tmp/logs/sshd.log 2>&1 &
-sshd_pid=$!
+# ttyd hands every client the same tmux session, so a dropped browser tab or a
+# reconnect from another device resumes the same shell. `bash -l` first so
+# /etc/profile.d sets SSH_AUTH_SOCK for the agent started above.
+echo "[start] ttyd web terminal on :${WEB_TERMINAL_PORT}"
+ttyd \
+    --port "${WEB_TERMINAL_PORT}" \
+    --interface 0.0.0.0 \
+    --credential "${WEB_TERMINAL_USER}:${WEB_TERMINAL_PASSWORD}" \
+    --writable \
+    --client-option 'titleFixed=opencode' \
+    --client-option 'fontSize=14' \
+    --client-option 'scrollback=10000' \
+    --client-option 'disableLeaveAlert=true' \
+    bash -lc 'exec tmux new -A -s main -c /workspace' \
+    >/tmp/logs/ttyd.log 2>&1 &
+ttyd_pid=$!
 
 tail -F /tmp/logs/*.log &
 tail_pid=$!
 
 cleanup() {
     trap - EXIT INT TERM
-    kill "${opencode_pid}" "${openchamber_pid}" "${ssh_agent_pid}" "${tail_pid}" 2>/dev/null || true
-    sudo kill "${sshd_pid}" 2>/dev/null || true
-    wait "${opencode_pid}" "${openchamber_pid}" "${ssh_agent_pid}" "${sshd_pid}" "${tail_pid}" 2>/dev/null || true
+    kill "${opencode_pid}" "${openchamber_pid}" "${ssh_agent_pid}" "${ttyd_pid}" "${tail_pid}" 2>/dev/null || true
+    wait "${opencode_pid}" "${openchamber_pid}" "${ssh_agent_pid}" "${ttyd_pid}" "${tail_pid}" 2>/dev/null || true
 }
 
 wait_for_exit() {
@@ -96,7 +107,7 @@ wait_for_exit() {
         for name_pid in \
             "opencode:${opencode_pid}" \
             "openchamber:${openchamber_pid}" \
-            "sshd:${sshd_pid}" \
+            "ttyd:${ttyd_pid}" \
             "ssh-agent:${ssh_agent_pid}"; do
             name="${name_pid%%:*}"
             pid="${name_pid#*:}"

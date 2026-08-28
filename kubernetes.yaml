@@ -35,6 +35,9 @@ metadata:
 type: Opaque
 stringData:
   OPENCHAMBER_PASSWORD: CHANGEME
+  # Basic-auth password for the ttyd web terminal. Omit the key (and the env
+  # entry below) to reuse OPENCHAMBER_PASSWORD instead.
+  WEB_TERMINAL_PASSWORD: CHANGEME
   GITHUB_TOKEN: CHANGEME
 ---
 apiVersion: apps/v1
@@ -52,8 +55,6 @@ spec:
       labels:
         app: openchamber
     spec:
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
       containers:
         - name: openchamber
           image: localhost:32000/opencode:latest
@@ -65,8 +66,8 @@ spec:
             - name: opencode
               containerPort: 4096
               protocol: TCP
-            - name: ssh
-              containerPort: 2222
+            - name: terminal
+              containerPort: 7681
               protocol: TCP
           env:
             - name: OPENCHAMBER_PASSWORD
@@ -74,6 +75,11 @@ spec:
                 secretKeyRef:
                   name: openchamber-secrets
                   key: OPENCHAMBER_PASSWORD
+            - name: WEB_TERMINAL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openchamber-secrets
+                  key: WEB_TERMINAL_PASSWORD
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -95,9 +101,6 @@ spec:
             - name: openchamber-data
               mountPath: /home/dev/.config/openchamber
               subPath: config-openchamber
-            - name: openchamber-data
-              mountPath: /etc/ssh/host-keys
-              subPath: ssh-host-keys
             - name: opencode-share
               mountPath: /home/dev/.local/share/opencode
             - name: opencode-state
@@ -158,6 +161,10 @@ spec:
       name: opencode
       port: 4096
       targetPort: 4096
+    - protocol: TCP
+      name: terminal
+      port: 7681
+      targetPort: 7681
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -206,6 +213,29 @@ spec:
                 name: openchamber-service
                 port:
                   number: 4096
-# SSH (opencode.pythagoras.lan:2222) is reached directly via hostNetwork:
-# the pod binds the host's :2222, so no Service or Ingress entry is needed
-# for it. The Ingress above only handles HTTP/80 on the same hostname.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: terminal-ingress
+  namespace: openchamber
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: terminal.pythagoras.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: openchamber-service
+                port:
+                  number: 7681
+# Shell access is the ttyd web terminal above; there is no sshd, so the pod no
+# longer needs hostNetwork to bind a node port.
