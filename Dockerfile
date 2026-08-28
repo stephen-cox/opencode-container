@@ -15,12 +15,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl wget gnupg tzdata locales sudo \
+        ca-certificates curl gnupg tzdata locales sudo \
         rsync less tini \
         git openssh-client \
         ripgrep fd-find jq \
-        build-essential libffi-dev libssl-dev \
-        python3 python3-venv python3-pip python3-dev python3-full python3-requests \
+        python3 python3-venv python3-pip python3-requests \
         python-is-python3 \
         tmux nano neovim \
         direnv \
@@ -86,12 +85,15 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
 
+# `npm cache clean` matters here: `npm install -g` leaves the downloaded
+# tarballs in /root/.npm, and without the clean they are committed into this
+# layer for the life of the image.
 RUN npm install -g --omit=dev \
         backlog.md \
         opencode-ai \
         @openchamber/web \
-        @anthropic-ai/claude-code \
-        @openai/codex
+    && npm cache clean --force \
+    && rm -rf /usr/lib/node_modules/opencode-ai/node_modules/*-baseline
 
 ARG DEV_UID=1000
 ARG DEV_GID=1000
