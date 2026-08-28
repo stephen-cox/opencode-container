@@ -1,0 +1,87 @@
+name: Publish image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - start.sh
+      - .dockerignore
+      - .github/workflows/publish.yml
+  schedule:
+    # Weekly rebuild. This is what keeps the image current: the base image's
+    # security patches, apt updates, and the deliberately unpinned npm globals
+    # (opencode-ai, @openchamber/web, backlog.md) are all picked up here.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      no-cache:
+        description: Rebuild every layer from scratch
+        type: boolean
+        default: false
+
+# Never cancel a publish mid-push: a half-uploaded manifest is worse than a
+# queued run.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=schedule,pattern={{date 'YYYYMMDD'}}
+          labels: |
+            org.opencontainers.image.title=opencode-container
+            org.opencontainers.image.description=Remote dev environment with OpenCode, OpenChamber and a ttyd web terminal
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # A cached scheduled build would reuse the apt and npm layers and so
+          # pick up nothing new, which defeats the point of the weekly run.
+          # Push builds keep the cache and stay fast.
+          no-cache: ${{ github.event_name == 'schedule' || github.event.inputs.no-cache == 'true' }}
+          # Fetch a newer ubuntu:26.04 rather than trusting the runner's copy.
+          pull: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      - name: Publish summary
+        run: |
+          {
+            echo "### Published \`${{ github.event_name }}\` build"
+            echo
+            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
+            echo
+            echo "Tags:"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
