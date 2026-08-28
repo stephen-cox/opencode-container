@@ -1,3 +1,12 @@
+# Example manifest for a single-node MicroK8s cluster. Placeholders to replace
+# before applying:
+#
+#   USER          the node's local username, for the hostPath mounts below
+#   example.lan   your own DNS suffix for the three Ingress hosts
+#   CHANGEME      the Secret values
+#
+# The hostPath volumes assume a single node and are convenient for a local
+# cluster; use PersistentVolumeClaims for anything scheduled across nodes.
 ---
 apiVersion: v1
 kind: Namespace
@@ -57,7 +66,11 @@ spec:
     spec:
       containers:
         - name: openchamber
-          image: localhost:32000/opencode:latest
+          # Published weekly by .github/workflows/publish.yml. With the
+          # `latest` tag, imagePullPolicy: Always is what picks up each rebuild.
+          # If the GHCR package is private, add an imagePullSecret with a
+          # read:packages token instead of relying on anonymous pulls.
+          image: ghcr.io/stephen-cox/opencode-container:latest
           imagePullPolicy: Always
           ports:
             - name: http
@@ -121,26 +134,26 @@ spec:
             claimName: openchamber-pvc
         - name: opencode-share
           hostPath:
-            path: /home/stephen/.local/share/opencode
+            path: /home/USER/.local/share/opencode
             type: DirectoryOrCreate
         - name: opencode-state
           hostPath:
-            path: /home/stephen/.local/state/opencode
+            path: /home/USER/.local/state/opencode
             type: DirectoryOrCreate
         - name: opencode-config
           hostPath:
-            path: /home/stephen/.config/opencode
+            path: /home/USER/.config/opencode
             type: DirectoryOrCreate
         # Mounted readOnly above: the dev user is UID 1000 == the host user, so a
         # writable mount would let anything in the container append to the host
         # account's authorized_keys.
         - name: ssh
           hostPath:
-            path: /home/stephen/.ssh
+            path: /home/USER/.ssh
             type: Directory
         - name: workspace
           hostPath:
-            path: /home/stephen/openchamber
+            path: /home/USER/workspace
             type: Directory
 ---
 apiVersion: v1
@@ -179,7 +192,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: openchamber.pythagoras.lan
+    - host: openchamber.example.lan
       http:
         paths:
           - path: /
@@ -203,7 +216,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: opencode.pythagoras.lan
+    - host: opencode.example.lan
       http:
         paths:
           - path: /
@@ -227,7 +240,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: terminal.pythagoras.lan
+    - host: terminal.example.lan
       http:
         paths:
           - path: /

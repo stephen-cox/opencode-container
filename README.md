@@ -1,178 +1,158 @@
 # Remote coding container
 
-This image runs a remote coding environment with OpenCode, OpenChamber, and a
-browser-based terminal for shell access. It is designed to run well in
-Kubernetes. An example MicroK8s manifest is available at
-[`kubernetes.yaml`](kubernetes.yaml), but this repository does not include a
-Helm chart.
+A browser-based remote dev environment — OpenCode, OpenChamber and a
+[ttyd](https://github.com/tsl0922/ttyd) web terminal in one container. Runs
+under Docker or Kubernetes; [`kubernetes.yaml`](kubernetes.yaml) is a worked
+MicroK8s example (no Helm chart).
 
-## Runtime model
+## What's inside
 
-The container starts four processes:
+OpenCode, OpenChamber, backlog.md, GitHub CLI, uv, Node 26, Python 3.14, git,
+tmux, neovim, nano, ripgrep, fd, jq, yq, direnv.
 
-- OpenCode on `0.0.0.0:4096` by default.
-- OpenChamber on `0.0.0.0:3000`.
-- [ttyd](https://github.com/tsl0922/ttyd) on `0.0.0.0:7681` — a web terminal
-  served over HTTP/WebSocket, behind HTTP basic auth.
-- ssh-agent listening on `/home/dev/.ssh-agent.sock`. `SSH_AUTH_SOCK` is
-  exported globally via `/etc/profile.d/ssh-agent.sh`, so every interactive
-  shell sees the same agent. Run `ssh-add` once after connecting; the
-  passphrase is cached for the lifetime of the container.
+There is no C toolchain — `build-essential` and `python3-dev` are left out to
+keep the image small, and prebuilt wheels and npm prebuilds cover normal use. If
+you need to compile something:
 
-OpenChamber connects to OpenCode over loopback. OpenCode itself has no
-built-in authentication, so binding `0.0.0.0` exposes its API to whatever
-network the pod is on. Run only on a trusted LAN, or front it with an Ingress
-that adds auth.
-
-### Web terminal
-
-Open the terminal port in a browser and authenticate with
-`WEB_TERMINAL_USER` / `WEB_TERMINAL_PASSWORD`. ttyd runs as the `dev` user and
-attaches every client to a shared `tmux` session (`main`, rooted at
-`/workspace`) via `bash -lc 'exec tmux new -A -s main -c /workspace'`, so:
-
-- Closing the tab or losing the network leaves the session running; reopening
-  reattaches to the same shell with scrollback intact.
-- Connecting from a second device joins the *same* session rather than starting
-  a new one. Use `tmux new -s other` if you want an independent one.
-- The login shell picks up `/etc/profile.d/ssh-agent.sh`, so `git push` over SSH
-  works after a single `ssh-add`.
-
-No SSH client, host key, or `authorized_keys` file is involved — the container
-ships `openssh-client` for outbound Git over SSH only.
-
-## Required environment variables
-
-Set these values from Kubernetes Secrets rather than baking them into the
-image:
-
-| Variable               | Required | Purpose                          |
-| ---------------------- | -------- | -------------------------------- |
-| `OPENCHAMBER_PASSWORD` | Yes      | Password for the OpenChamber UI. |
-
-Optional overrides:
-
-| Variable                | Default                | Purpose                            |
-| ----------------------- | ---------------------- | ---------------------------------- |
-| `OPENCHAMBER_PORT`      | `3000`                 | OpenChamber listen port.           |
-| `OPENCODE_PORT`         | `4096`                 | OpenCode listen port.              |
-| `OPENCODE_HOSTNAME`     | `0.0.0.0`              | OpenCode bind address.             |
-| `WEB_TERMINAL_PORT`     | `7681`                 | ttyd listen port.                  |
-| `WEB_TERMINAL_USER`     | `dev`                  | Web terminal basic-auth user.      |
-| `WEB_TERMINAL_PASSWORD` | `OPENCHAMBER_PASSWORD` | Web terminal basic-auth password.  |
-
-The web terminal never starts without a password. If `WEB_TERMINAL_PASSWORD` is
-unset it falls back to `OPENCHAMBER_PASSWORD` (which is already required), so a
-single-secret deployment works without extra configuration; set it explicitly to
-give the shell its own credential.
-
-## Kubernetes exposure
-
-Recommended Service/Ingress routing:
-
-| Port   | Expose externally? | Notes                                                                                   |
-| ------ | ------------------ | --------------------------------------------------------------------------------------- |
-| `3000` | Yes                | Route this to OpenChamber via Ingress (`openchamber.pythagoras.lan`).                   |
-| `4096` | Yes                | OpenCode API via Ingress (`opencode.pythagoras.lan`). No built-in auth; trust LAN only. |
-| `7681` | Optional           | Web terminal via Ingress (`terminal.pythagoras.lan`). Basic auth, WebSocket upgrade.    |
-
-If your ingress already handles authentication, still set a non-empty
-`OPENCHAMBER_PASSWORD`. The startup script requires it so accidental unauthenticated
-deployments fail closed.
-
-Because all three ports are now plain HTTP, the pod no longer needs
-`hostNetwork: true` — that was only there so sshd could bind the node's
-`:2222`. Everything routes through the Ingress.
-
-The included [`kubernetes.yaml`](kubernetes.yaml) is a local MicroK8s example.
-It uses `hostPath` volumes under `/home/stephen/...` and exposes OpenChamber,
-OpenCode, and the web terminal through one NodePort Service with three Ingress
-hosts. Point `terminal.pythagoras.lan` at the ingress controller and open it in
-a browser to get a shell.
-
-The ttyd session is a WebSocket, so the Ingress needs HTTP/1.1, a long read
-timeout, and buffering off. The annotations already on the manifest's Ingresses
-cover that; nginx handles the `Upgrade` handshake itself.
-
-## Persistence
-
-Use persistent volumes for state that should survive pod rescheduling. Common
-mounts are:
-
-| Path                              | Recommended storage         | Purpose                                 |
-| --------------------------------- | --------------------------- | --------------------------------------- |
-| `/workspace`                      | PVC                         | Project repositories and working files. |
-| `/home/dev/.config/opencode`      | PVC or Secret-backed config | OpenCode configuration.                 |
-| `/home/dev/.local/share/opencode` | PVC                         | OpenCode state and session data.        |
-| `/home/dev/.config/gh`            | Secret or PVC               | GitHub CLI authentication.              |
-| `/home/dev/.ssh`                  | Secret or PVC               | Outbound Git SSH keys.                  |
-
-Prefer Kubernetes Secrets for credentials and private keys. If you use a PVC for
-SSH or CLI credentials, restrict access to the namespace and workload.
-
-## Probes and health checks
-
-The Dockerfile includes a Docker healthcheck against OpenChamber:
-
-```text
-http://127.0.0.1:3000/
+```bash
+sudo apt-get update && sudo apt-get install -y build-essential python3-dev
 ```
 
-Kubernetes does not automatically use Docker healthchecks. Configure pod probes
-explicitly. A typical readiness probe is:
+## Quick start
 
-```yaml
-readinessProbe:
-  httpGet:
-    path: /
-    port: 3000
-  initialDelaySeconds: 10
-  periodSeconds: 10
+```bash
+docker run -d --name opencode \
+    -p 3000:3000 -p 7681:7681 \
+    -e OPENCHAMBER_PASSWORD='<ui-password>' \
+    -e WEB_TERMINAL_PASSWORD='<shell-password>' \
+    -v "${PWD}:/workspace" \
+    ghcr.io/stephen-cox/opencode-container:latest
 ```
 
-A conservative liveness probe is:
+- Web terminal: <http://localhost:7681> — log in as `dev`.
+- OpenChamber: <http://localhost:3000>.
 
-```yaml
-livenessProbe:
-  httpGet:
-    path: /
-    port: 3000
-  initialDelaySeconds: 30
-  periodSeconds: 30
+## Processes and ports
+
+| Port   | Process           | Authentication                        | Expose externally?                       |
+| ------ | ----------------- | ------------------------------------- | ---------------------------------------- |
+| `3000` | OpenChamber UI    | `OPENCHAMBER_PASSWORD`                | Yes                                      |
+| `7681` | ttyd web terminal | Basic auth, `dev` + password          | Yes, over TLS                            |
+| `4096` | OpenCode API      | **None**                              | No — trusted LAN or authenticating proxy |
+
+A fourth process, ssh-agent, listens on `/home/dev/.ssh-agent.sock`.
+`SSH_AUTH_SOCK` is set for every shell, so run `ssh-add` once and Git over SSH
+works for the life of the container. `start.sh` exits if any of the four dies.
+
+OpenChamber reaches OpenCode over loopback, so port `4096` only needs publishing
+if you want the API itself.
+
+## Web terminal
+
+Every client attaches to one shared tmux session (`main`, in `/workspace`).
+Closing the tab leaves work running and reopening reattaches to it; a second
+device joins the *same* session, so run `tmux new -s other` if you want an
+independent one.
+
+## Environment variables
+
+| Variable                 | Required | Default                | Purpose                            |
+| ------------------------ | -------- | ---------------------- | ---------------------------------- |
+| `OPENCHAMBER_PASSWORD`   | Yes      | —                      | OpenChamber UI password.           |
+| `WEB_TERMINAL_PASSWORD`  | No       | `OPENCHAMBER_PASSWORD` | Web terminal password.             |
+| `WEB_TERMINAL_USER`      | No       | `dev`                  | Web terminal username.             |
+| `WEB_TERMINAL_PORT`      | No       | `7681`                 | ttyd listen port.                  |
+| `OPENCHAMBER_PORT`       | No       | `3000`                 | OpenChamber listen port.           |
+| `OPENCODE_PORT`          | No       | `4096`                 | OpenCode listen port.              |
+| `OPENCODE_HOSTNAME`      | No       | `0.0.0.0`              | OpenCode bind address.             |
+| `OPENCODE_READY_TIMEOUT` | No       | `30`                   | Seconds to wait for OpenCode.      |
+| `GITHUB_TOKEN`           | No       | —                      | Passed through for `gh`.           |
+
+Startup fails if `OPENCHAMBER_PASSWORD` is unset, so an unauthenticated
+deployment cannot happen by accident. Supply both passwords from Kubernetes
+Secrets, not the image.
+
+## Kubernetes
+
+Replace the manifest's placeholders — `USER` (hostPath owner), `example.lan`
+(Ingress DNS suffix), `CHANGEME` (Secret values) — then:
+
+```bash
+kubectl apply -f kubernetes.yaml
 ```
 
-The startup script also exits if OpenCode, OpenChamber, ttyd, or ssh-agent
-exits. Use a Kubernetes restart policy appropriate for your workload.
+That creates a namespace, Secret, 4Gi PVC, Deployment, one NodePort Service and
+three Ingresses, with readiness and liveness probes on port `3000`. One of those
+Ingresses publishes OpenCode's unauthenticated API — delete it unless you want
+port `4096` reachable from the LAN. The image's
+Docker `HEALTHCHECK` is ignored by Kubernetes, which is why the manifest defines
+its own probes. `hostNetwork` is not used; traffic routes through the Ingress.
 
-## Security notes
+The terminal is a WebSocket. The manifest's Ingress annotations (HTTP/1.1,
+3600s timeouts, buffering off) cover it; nginx handles the upgrade itself.
 
-- The `dev` user has passwordless sudo inside the container. Treat access to
-  the web terminal as administrative access to the container.
-- The web terminal's only protection is HTTP basic auth, which is weaker than
-  the key-only sshd it replaces: a password can be guessed or replayed where a
-  private key cannot, and ttyd applies no rate limiting or lockout. Use a long
-  random `WEB_TERMINAL_PASSWORD`, and prefer putting the terminal behind an
-  authenticating Ingress (or leaving `7681` unexposed and reaching it by
-  `kubectl port-forward`) on any network you do not fully trust.
-- Serve the terminal over TLS. On plain HTTP the basic-auth credential and the
-  entire terminal stream — including anything you type, such as secrets pasted
-  into a shell — cross the network in cleartext.
-- ttyd is started with `--writable`; without it the terminal would be
-  read-only. There is no way to expose a view-only terminal and a writable one
-  on the same port.
-- OpenCode `4096` is bound on `0.0.0.0` and has no built-in auth. Only run
-  this image on a trusted network or behind an authenticating Ingress.
-- Do not bake API tokens, SSH keys, or GitHub credentials into the image.
-- If mounting `/var/run/docker.sock` for Docker access, remember that it grants
-  root-equivalent control over the node. This image does not require that mount.
+### Persistence
+
+Mount these to survive rescheduling:
+
+| Path                              | Purpose                             |
+| --------------------------------- | ----------------------------------- |
+| `/workspace`                      | Repositories and working files.     |
+| `/home/dev/.config/opencode`      | OpenCode configuration.             |
+| `/home/dev/.local/share/opencode` | OpenCode sessions and data.         |
+| `/home/dev/.local/state/opencode` | OpenCode runtime state.             |
+| `/home/dev/.config/openchamber`   | OpenChamber configuration.          |
+| `/home/dev/.ssh`                  | Git SSH keys — mount read-only.     |
+| `/home/dev/.ssh-state`            | `known_hosts`.                      |
+| `/home/dev/.config/gh`            | GitHub CLI auth (not in the example).|
+
+Use Secrets for keys and tokens, PVCs for the rest.
+
+## Security
+
+- The web terminal is root-equivalent access: `dev` has passwordless sudo.
+- Basic auth is weaker than the key-only sshd this replaced — passwords can be
+  guessed or replayed and ttyd has no rate limiting. Use a long random password,
+  serve it over TLS, and on any untrusted network leave `7681` unexposed and
+  reach it with `kubectl port-forward`.
+- Over plain HTTP the password and everything you type, including pasted
+  secrets, cross the network in cleartext.
+- OpenCode's port `4096` has no authentication of any kind.
+- Never bake tokens or keys into the image; pass them at runtime.
+- Requires an AVX2-capable x86-64 CPU (Haswell, 2013 or later).
 
 ## Building
-
-Build from the repository root:
 
 ```bash
 docker build -t opencode-remote:latest .
 ```
 
-`start.sh` is the only file copied into the image; `.dockerignore` excludes
-everything else from the context.
+`start.sh` is the only file copied in; `.dockerignore` excludes the rest.
+
+## Published image
+
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml) pushes to
+`ghcr.io/stephen-cox/opencode-container`.
+
+| Tag           | Written by                |
+| ------------- | ------------------------- |
+| `latest`      | pushes to `main`, weekly  |
+| `sha-abc1234` | every build               |
+| `YYYYMMDD`    | weekly rebuild — use to roll back a bad week |
+
+The weekly run (Mondays 04:17 UTC) builds with `no-cache` and `pull`, which is
+what picks up new Ubuntu patches and new `opencode-ai`, `@openchamber/web` and
+`backlog.md` releases; a cached rebuild would change nothing. Only `ttyd` is
+pinned (`ARG TTYD_VERSION`, checksum-verified). Every build publishes SBOM and
+provenance attestations.
+
+Two things to know:
+
+- New GHCR packages are **private**. Make the package public after the first
+  push, or nobody else can pull it.
+- GitHub **disables scheduled workflows after 60 days** of repository
+  inactivity, so a silent weekly build may mean the schedule is off, not
+  passing.
+
+Builds are `linux/amd64` only. For arm64, build on a native arm runner and merge
+the manifests — QEMU emulation is painfully slow for this image.
