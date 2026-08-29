@@ -40,7 +40,7 @@ services:
       - -c
       - |
         mkdir -p "$${HOME}" /tmp/chrome-profile
-        CHROME="$$(node -e 'const puppeteer = require("puppeteer"); process.stdout.write(puppeteer.executablePath())')"
+        CHROME="$$(node --input-type=module -e 'import puppeteer from "puppeteer"; process.stdout.write(await puppeteer.executablePath())')"
         exec "$${CHROME}" \
           --headless \
           --no-sandbox \
