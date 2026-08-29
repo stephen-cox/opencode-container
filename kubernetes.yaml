@@ -180,6 +180,8 @@ spec:
           env:
             - name: HOME
               value: /tmp/chrome-home
+            - name: PUPPETEER_CACHE_DIR
+              value: /home/pptruser/.cache/puppeteer
           readinessProbe:
             exec:
               command:

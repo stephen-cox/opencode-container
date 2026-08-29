@@ -34,6 +34,7 @@ services:
       - /tmp:size=1g,mode=1777
     environment:
       HOME: /tmp/chrome-home
+      PUPPETEER_CACHE_DIR: /home/pptruser/.cache/puppeteer
     command:
       - sh
       - -c
