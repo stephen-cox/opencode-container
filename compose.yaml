@@ -1,0 +1,67 @@
+services:
+  opencode:
+    build:
+      context: .
+    image: opencode-remote:chrome-mcp
+    restart: unless-stopped
+    environment:
+      OPENCHAMBER_PASSWORD: ${OPENCHAMBER_PASSWORD:?OPENCHAMBER_PASSWORD must be set}
+      WEB_TERMINAL_PASSWORD: ${WEB_TERMINAL_PASSWORD:-}
+      OPENCODE_CONFIG: /etc/opencode/chrome-devtools.json
+    ports:
+      - "${OPENCHAMBER_PORT:-3000}:3000"
+      - "${WEB_TERMINAL_PORT:-7681}:7681"
+    volumes:
+      - "${WORKSPACE:-.}:/workspace"
+      - ./config/chrome-devtools.json:/etc/opencode/chrome-devtools.json:ro
+      - opencode-config:/home/dev/.config/opencode
+      - opencode-share:/home/dev/.local/share/opencode
+      - opencode-state:/home/dev/.local/state/opencode
+      - openchamber-config:/home/dev/.config/openchamber
+
+  chrome:
+    image: ghcr.io/puppeteer/puppeteer:25.9.0
+    network_mode: service:opencode
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 1gb
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    environment:
+      HOME: /tmp/chrome-home
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p "$${HOME}" /tmp/chrome-profile
+        CHROME="$$(node -e 'const puppeteer = require("puppeteer"); process.stdout.write(puppeteer.executablePath())')"
+        exec "$${CHROME}" \
+          --headless \
+          --no-sandbox \
+          --remote-debugging-address=127.0.0.1 \
+          --remote-debugging-port=9222 \
+          --user-data-dir=/tmp/chrome-profile \
+          --no-first-run \
+          --no-default-browser-check \
+          --disable-background-networking
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:9222/json/version').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+volumes:
+  opencode-config:
+  opencode-share:
+  opencode-state:
+  openchamber-config:

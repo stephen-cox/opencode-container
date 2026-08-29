@@ -92,6 +92,7 @@ RUN npm install -g --omit=dev \
         backlog.md \
         opencode-ai \
         @openchamber/web \
+        chrome-devtools-mcp \
     && npm cache clean --force \
     && rm -rf /usr/lib/node_modules/opencode-ai/node_modules/*-baseline
 
