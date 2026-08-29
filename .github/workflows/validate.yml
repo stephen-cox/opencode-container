@@ -75,6 +75,11 @@ jobs:
             sleep 5
           done
           docker compose ps -a
+          chrome_logs="$(docker compose logs --no-color --tail 30 chrome 2>&1)"
+          chrome_logs="${chrome_logs//'%'/'%25'}"
+          chrome_logs="${chrome_logs//$'\r'/'%0D'}"
+          chrome_logs="${chrome_logs//$'\n'/'%0A'}"
+          echo "::error title=Chrome container logs::${chrome_logs}"
           for service in opencode chrome; do
             container_id="$(docker compose ps -aq "${service}")"
             details="$(docker inspect --format 'status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} error={{.State.Error}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${container_id}")"
