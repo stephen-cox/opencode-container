@@ -49,6 +49,31 @@ stringData:
   WEB_TERMINAL_PASSWORD: CHANGEME
   GITHUB_TOKEN: CHANGEME
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chrome-devtools-mcp
+  namespace: openchamber
+data:
+  opencode.json: |
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "mcp": {
+        "chrome-devtools": {
+          "type": "local",
+          "command": [
+            "chrome-devtools-mcp",
+            "--browser-url=http://127.0.0.1:9222",
+            "--no-usage-statistics",
+            "--no-performance-crux",
+            "--redact-network-headers"
+          ],
+          "enabled": true,
+          "timeout": 15000
+        }
+      }
+    }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -98,6 +123,8 @@ spec:
                 secretKeyRef:
                   name: openchamber-secrets
                   key: GITHUB_TOKEN
+            - name: OPENCODE_CONFIG
+              value: /etc/opencode/chrome-devtools/opencode.json
           readinessProbe:
             httpGet:
               path: /
@@ -128,6 +155,75 @@ spec:
               subPath: ssh-state
             - name: workspace
               mountPath: /workspace
+            - name: chrome-devtools-mcp
+              mountPath: /etc/opencode/chrome-devtools
+              readOnly: true
+        - name: chrome
+          image: ghcr.io/puppeteer/puppeteer:25.9.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              mkdir -p "${HOME}" /tmp/chrome-profile
+              CHROME="$(node --input-type=module -e 'import puppeteer from "puppeteer"; process.stdout.write(await puppeteer.executablePath())')"
+              exec "${CHROME}" \
+                --headless \
+                --no-sandbox \
+                --remote-debugging-address=127.0.0.1 \
+                --remote-debugging-port=9222 \
+                --user-data-dir=/tmp/chrome-profile \
+                --no-first-run \
+                --no-default-browser-check \
+                --disable-background-networking
+          env:
+            - name: HOME
+              value: /tmp/chrome-home
+            - name: PUPPETEER_CACHE_DIR
+              value: /home/pptruser/.cache/puppeteer
+          readinessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - fetch('http://127.0.0.1:9222/json/version').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - fetch('http://127.0.0.1:9222/json/version').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10042
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: chrome-tmp
+              mountPath: /tmp
+            - name: chrome-shm
+              mountPath: /dev/shm
       volumes:
         - name: openchamber-data
           persistentVolumeClaim:
@@ -155,6 +251,16 @@ spec:
           hostPath:
             path: /home/USER/workspace
             type: Directory
+        - name: chrome-devtools-mcp
+          configMap:
+            name: chrome-devtools-mcp
+        - name: chrome-tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: chrome-shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
 ---
 apiVersion: v1
 kind: Service

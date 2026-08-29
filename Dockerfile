@@ -92,6 +92,7 @@ RUN npm install -g --omit=dev \
         backlog.md \
         opencode-ai \
         @openchamber/web \
+        chrome-devtools-mcp \
     && npm cache clean --force \
     && rm -rf /usr/lib/node_modules/opencode-ai/node_modules/*-baseline
 
@@ -114,8 +115,14 @@ RUN set -eux; \
     usermod -aG sudo dev; \
     echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev; \
     chmod 0440 /etc/sudoers.d/dev; \
-    mkdir -p /workspace /home/dev/.ssh-state; \
-    chown dev:dev /workspace /home/dev/.ssh-state
+    mkdir -p \
+        /workspace \
+        /home/dev/.ssh-state \
+        /home/dev/.config/opencode \
+        /home/dev/.config/openchamber \
+        /home/dev/.local/share/opencode \
+        /home/dev/.local/state/opencode; \
+    chown -R dev:dev /workspace /home/dev/.ssh-state /home/dev/.config /home/dev/.local
 
 COPY --chmod=0755 start.sh /usr/local/bin/start.sh
 

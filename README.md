@@ -32,6 +32,39 @@ docker run -d --name opencode \
 - Web terminal: <http://localhost:7681> — log in as `dev`.
 - OpenChamber: <http://localhost:3000>.
 
+### Chrome DevTools MCP
+
+The Compose deployment adds Chrome for Testing as a hardened, headless sidecar
+while OpenCode runs the `chrome-devtools-mcp` process locally over stdio:
+
+```bash
+export OPENCHAMBER_PASSWORD='<ui-password>'
+export WEB_TERMINAL_PASSWORD='<shell-password>'
+export WORKSPACE="${PWD}"
+docker compose up -d --build
+```
+
+The two containers share a network namespace. Chrome therefore binds its DevTools
+endpoint only to `127.0.0.1:9222`; that port is not published to the host. Confirm
+the browser and MCP server from the OpenCode container:
+
+```bash
+docker compose exec opencode \
+    curl -fsS http://127.0.0.1:9222/json/version
+docker compose exec opencode opencode mcp list
+```
+
+Then ask OpenCode: `Use chrome-devtools to open https://developers.chrome.com
+and take a snapshot.` The Chrome profile is ephemeral and is discarded whenever
+the sidecar is recreated. Stop the deployment with `docker compose down`; add
+`--volumes` only if you also want to remove the persisted OpenCode and
+OpenChamber state.
+
+The MCP configuration is injected as an additional config through
+`OPENCODE_CONFIG`, so it merges with rather than replaces the user's config in
+`/home/dev/.config/opencode`. OpenCode loads configuration only at startup;
+restart the deployment after changing `config/chrome-devtools.json`.
+
 ## Processes and ports
 
 | Port   | Process           | Authentication                        | Expose externally?                       |
@@ -81,12 +114,25 @@ Replace the manifest's placeholders — `USER` (hostPath owner), `example.lan`
 kubectl apply -f kubernetes.yaml
 ```
 
-That creates a namespace, Secret, 4Gi PVC, Deployment, one NodePort Service and
-three Ingresses, with readiness and liveness probes on port `3000`. One of those
-Ingresses publishes OpenCode's unauthenticated API — delete it unless you want
-port `4096` reachable from the LAN. The image's
+That creates a namespace, Secret, ConfigMap, 4Gi PVC, Deployment, one NodePort
+Service and three Ingresses. The Deployment includes the same headless Chrome
+sidecar as the Compose setup. Chrome has its own readiness and liveness probes
+on its pod-local DevTools endpoint; port `9222` is not included in a Service or
+Ingress. One of the existing Ingresses publishes OpenCode's unauthenticated API
+— delete it unless you want port `4096` reachable from the LAN. The image's
 Docker `HEALTHCHECK` is ignored by Kubernetes, which is why the manifest defines
 its own probes. `hostNetwork` is not used; traffic routes through the Ingress.
+
+After applying the manifest, confirm Chrome is reachable only from the companion
+OpenCode container:
+
+```bash
+kubectl -n openchamber rollout status deployment/openchamber
+kubectl -n openchamber exec deployment/openchamber -c openchamber -- \
+    curl -fsS http://127.0.0.1:9222/json/version
+kubectl -n openchamber exec deployment/openchamber -c openchamber -- \
+    opencode mcp list
+```
 
 The terminal is a WebSocket. The manifest's Ingress annotations (HTTP/1.1,
 3600s timeouts, buffering off) cover it; nginx handles the upgrade itself.
@@ -118,8 +164,24 @@ Use Secrets for keys and tokens, PVCs for the rest.
 - Over plain HTTP the password and everything you type, including pasted
   secrets, cross the network in cleartext.
 - OpenCode's port `4096` has no authentication of any kind.
+- Chrome's DevTools endpoint grants complete control of the browser. Never add
+  port `9222` to Docker port publishing, a Kubernetes Service, or an Ingress.
+- Do not use the automated Chrome profile for sensitive personal browsing or
+  accounts. Browser content, cookies and credentials are available to the MCP
+  client. The supplied configuration disables usage statistics and CrUX lookups
+  and redacts sensitive network headers returned by MCP tools.
+- Chrome runs with `--no-sandbox` inside a dedicated non-root sidecar with all
+  Linux capabilities dropped, no privilege escalation and a read-only root
+  filesystem. Keep those controls together; do not reuse the sidecar as a
+  general-purpose browser service.
 - Never bake tokens or keys into the image; pass them at runtime.
 - Requires an AVX2-capable x86-64 CPU (Haswell, 2013 or later).
+
+The remote `--browser-url` connection supports normal navigation, debugging,
+network and performance tools. Features that require a direct browser pipe,
+including some extension and PWA operations, are not available in this mode.
+Chrome requests 512Mi memory and is limited to 2Gi in the example Kubernetes
+manifest; tune those values for the pages and traces you run.
 
 ## Building
 
