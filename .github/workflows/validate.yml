@@ -46,17 +46,40 @@ jobs:
       - name: Start OpenCode and Chrome
         run: docker compose up -d
 
+      - name: Inspect initial service state
+        run: |
+          for service in opencode chrome; do
+            container_id="$(docker compose ps -aq "${service}")"
+            if [ -z "${container_id}" ]; then
+              echo "::error title=${service} container missing::Docker Compose did not create a container for ${service}"
+              exit 1
+            fi
+            details="$(docker inspect --format 'status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} error={{.State.Error}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${container_id}")"
+            echo "::notice title=${service} initial state::${details}"
+          done
+
       - name: Wait for container health
         run: |
           for attempt in $(seq 1 30); do
-            opencode_status="$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q opencode)")"
-            chrome_status="$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q chrome)")"
+            opencode_id="$(docker compose ps -aq opencode)"
+            chrome_id="$(docker compose ps -aq chrome)"
+            if [ -z "${opencode_id}" ] || [ -z "${chrome_id}" ]; then
+              echo "::error title=Container missing::opencode=${opencode_id:-missing} chrome=${chrome_id:-missing}"
+              exit 1
+            fi
+            opencode_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${opencode_id}")"
+            chrome_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${chrome_id}")"
             if [ "${opencode_status}" = healthy ] && [ "${chrome_status}" = healthy ]; then
               exit 0
             fi
             sleep 5
           done
-          docker compose ps
+          docker compose ps -a
+          for service in opencode chrome; do
+            container_id="$(docker compose ps -aq "${service}")"
+            details="$(docker inspect --format 'status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} error={{.State.Error}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${container_id}")"
+            echo "::error title=${service} failed health check::${details}"
+          done
           exit 1
 
       - name: Check Chrome from the OpenCode container
