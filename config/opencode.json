@@ -12,6 +12,14 @@
       ],
       "enabled": true,
       "timeout": 15000
+    },
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": {
+        "Authorization": "Bearer {env:CONTEXT7_API_KEY}"
+      },
+      "enabled": true
     }
   }
 }
