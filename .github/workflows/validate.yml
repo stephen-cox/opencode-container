@@ -32,15 +32,18 @@ jobs:
       OPENCHAMBER_PASSWORD: ci-openchamber-password
       GIT_USER_NAME: CI User
       GIT_USER_EMAIL: ci@example.com
-      SSH_AUTHORIZED_KEYS_DIR: ${{ runner.temp }}/ci-ssh-keys
     steps:
       - uses: actions/checkout@v4
 
       - name: Create CI SSH key
+        env:
+          # The runner context is only valid in step-level env, not job-level.
+          SSH_AUTHORIZED_KEYS_DIR: ${{ runner.temp }}/ci-ssh-keys
         run: |
           mkdir -p "${SSH_AUTHORIZED_KEYS_DIR}" ~/.ssh
           ssh-keygen -t ed25519 -f "${SSH_AUTHORIZED_KEYS_DIR}/ci_key" -N ''
           cp "${SSH_AUTHORIZED_KEYS_DIR}/ci_key.pub" "${SSH_AUTHORIZED_KEYS_DIR}/authorized_keys"
+          echo "SSH_AUTHORIZED_KEYS_DIR=${SSH_AUTHORIZED_KEYS_DIR}" >> "${GITHUB_ENV}"
 
       - name: Validate Compose configuration
         run: docker compose config --quiet
