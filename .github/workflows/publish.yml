@@ -53,7 +53,7 @@ jobs:
             type=schedule,pattern={{date 'YYYYMMDD'}}
           labels: |
             org.opencontainers.image.title=opencode-container
-            org.opencontainers.image.description=Remote dev environment with OpenCode, OpenChamber and a ttyd web terminal
+            org.opencontainers.image.description=Remote dev environment with OpenCode, OpenChamber and key-only SSH access
 
       - id: build
         uses: docker/build-push-action@v6

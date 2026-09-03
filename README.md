@@ -1,7 +1,7 @@
 # Remote coding container
 
-A browser-based remote dev environment — OpenCode, OpenChamber and a
-[ttyd](https://github.com/tsl0922/ttyd) web terminal in one container. Runs
+A browser-based remote dev environment — OpenCode and OpenChamber in one
+container, with key-only SSH for shell access (and Mosh for mobile). Runs
 under Docker or Kubernetes; [`kubernetes.yaml`](kubernetes.yaml) is a worked
 MicroK8s example (no Helm chart). The Compose and Kubernetes deployments add
 two companion containers: headless Chrome for the DevTools MCP, and
@@ -10,9 +10,9 @@ two companion containers: headless Chrome for the DevTools MCP, and
 ## What's inside
 
 OpenCode, OpenChamber, backlog.md, GitHub CLI, uv, Node 26, Python 3.14, git,
-tmux, neovim, nano, ripgrep, fd, jq, yq, direnv. code-server and Chrome are
-not baked into this image — they run as separate companion containers in the
-Compose and Kubernetes deployments.
+tmux, neovim, nano, ripgrep, fd, jq, yq, direnv, mosh. code-server and Chrome
+are not baked into this image — they run as separate companion containers in
+the Compose and Kubernetes deployments.
 
 There is no C toolchain — `build-essential` and `python3-dev` are left out to
 keep the image small, and prebuilt wheels and npm prebuilds cover normal use. If
@@ -26,14 +26,18 @@ sudo apt-get update && sudo apt-get install -y build-essential python3-dev
 
 ```bash
 docker run -d --name opencode \
-    -p 3000:3000 -p 7681:7681 \
+    -p 3000:3000 -p 2222:2222 -p 60000:60000/udp \
     -e OPENCHAMBER_PASSWORD='<ui-password>' \
-    -e WEB_TERMINAL_PASSWORD='<shell-password>' \
+    -e GIT_USER_NAME='Your Name' \
+    -e GIT_USER_EMAIL='you@example.com' \
     -v "${PWD}:/workspace" \
+    -v "${HOME}/.ssh:/home/dev/.ssh:ro" \
+    -v opencode-host-keys:/etc/ssh/host-keys \
     ghcr.io/stephen-cox/opencode-container:latest
 ```
 
-- Web terminal: <http://localhost:7681> — log in as `dev`.
+- SSH: `ssh -p 2222 dev@localhost` — public key in your `~/.ssh/authorized_keys`.
+- Mosh (optional, mobile): `mosh -p 60000 --ssh="ssh -p 2222" dev@localhost`.
 - OpenChamber: <http://localhost:3000>.
 
 ### Chrome DevTools MCP
@@ -43,7 +47,9 @@ while OpenCode runs the `chrome-devtools-mcp` process locally over stdio:
 
 ```bash
 export OPENCHAMBER_PASSWORD='<ui-password>'
-export WEB_TERMINAL_PASSWORD='<shell-password>'
+export SSH_AUTHORIZED_KEYS_DIR="${HOME}/.ssh"
+export GIT_USER_NAME='Your Name'
+export GIT_USER_EMAIL='you@example.com'
 # Optional: export CONTEXT7_API_KEY='<context7-api-key>'
 export WORKSPACE="${PWD}"
 docker compose up -d --build
@@ -96,12 +102,13 @@ kubectl -n openchamber exec deployment/openchamber -c openchamber -- \
 
 ## Processes and ports
 
-| Port   | Process           | Authentication                        | Expose externally?                       |
-| ------ | ----------------- | ------------------------------------- | ---------------------------------------- |
-| `3000` | OpenChamber UI    | `OPENCHAMBER_PASSWORD`                | Yes                                      |
-| `7681` | ttyd web terminal | Basic auth, `dev` + password          | Yes, over TLS                            |
-| `8080` | code-server       | Password login (`CODE_SERVER_PASSWORD`) | Yes, over TLS                          |
-| `4096` | OpenCode API      | **None**                              | No — trusted LAN or authenticating proxy |
+| Port        | Process           | Authentication                        | Expose externally?                       |
+| ----------- | ----------------- | ------------------------------------- | ---------------------------------------- |
+| `3000`      | OpenChamber UI    | `OPENCHAMBER_PASSWORD`                | Yes                                      |
+| `2222/tcp`  | sshd              | Public key only, `dev` user           | Yes — SSH encrypts its own traffic       |
+| `8080`      | code-server       | Password login (`CODE_SERVER_PASSWORD`) | Yes, over TLS                          |
+| `4096`      | OpenCode API      | **None**                              | No — trusted LAN or authenticating proxy |
+| `60000/udp` | mosh-server       | Via SSH, then session keys            | Optional — only if you use Mosh          |
 
 A fourth process, ssh-agent, listens on `/home/dev/.ssh-agent.sock`.
 `SSH_AUTH_SOCK` is set for every shell, so run `ssh-add` once and Git over SSH
@@ -110,12 +117,72 @@ works for the life of the container. `start.sh` exits if any of the four dies.
 OpenChamber reaches OpenCode over loopback, so port `4096` only needs publishing
 if you want the API itself.
 
-## Web terminal
+## SSH, tmux and Mosh
 
-Every client attaches to one shared tmux session (`main`, in `/workspace`).
-Closing the tab leaves work running and reopening reattaches to it; a second
-device joins the *same* session, so run `tmux new -s other` if you want an
-independent one.
+sshd is configured key-only (`PasswordAuthentication no`,
+`KbdInteractiveAuthentication no`, `PermitRootLogin no`, `AllowUsers dev`);
+the public keys live in `/home/dev/.ssh/authorized_keys`, typically delivered
+by mounting your `~/.ssh` read-only. Startup fails closed if that file is
+missing or empty.
+
+A bind mount keeps the *host's* uid on that file, and sshd's `StrictModes`
+rejects key files owned by neither `dev` nor root — which would lock out
+anyone whose host uid isn't 1000 (CI runners use 1001, macOS 501). `start.sh`
+therefore copies the delivered keys to a root-owned path on every boot, and
+`AuthorizedKeysFile` lists that copy first; `~/.ssh/authorized_keys` stays a
+live second source for keys you add interactively inside the container.
+
+Every interactive login attaches to one shared tmux session (`main`, in
+`/workspace`, via `/etc/profile.d/tmux-attach.sh`). Dropping a connection
+leaves work running and reconnecting reattaches to it; a second device joins
+the *same* session, so run `tmux new -s other` for an independent one. A
+system-wide `/etc/tmux.conf` enables mouse mode (touch scrolling in mobile SSH
+apps) and a 50000-line history; your own `~/.tmux.conf` still overrides it.
+
+`ClientAliveInterval 30` keeps NAT mappings warm and reaps dead clients, which
+matters on mobile networks.
+
+Mosh survives Wi-Fi↔cellular roaming and gives instant local echo on lossy
+links. It authenticates through SSH and then moves to UDP — by default the
+server picks a port from 60000–61000; pin it so your firewall only needs one
+hole:
+
+```bash
+mosh -p 60000 --ssh="ssh -p 2222" dev@example.lan
+```
+
+Run mosh *inside* tmux if you want scrollback — mosh itself only redraws the
+visible screen.
+
+### Git credentials without leaving keys behind
+
+Two ways to push from the container, both already wired up:
+
+- **In-container agent**: run `ssh-add` once inside the container; every shell
+  sees `SSH_AUTH_SOCK` and Git over SSH just works.
+- **Agent forwarding**: connect with `ssh -A` (or `ForwardAgent yes` in your
+  client config) and no key material is ever stored in the container. Only
+  forward to hosts you trust — a rooted container could otherwise use your
+  agent socket while you are connected.
+
+### Client-side quality of life
+
+```sshconfig
+Host opencode
+    HostName example.lan
+    Port 2222
+    User dev
+    # Reuse one connection for scp/rsync/subsequent shells — no repeat handshakes
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 10m
+    # Forward your local agent instead of keeping keys in the container
+    ForwardAgent yes
+```
+
+VS Code Remote-SSH and JetBrains Gateway also work against this container.
+`~/.vscode-server` lands under `/home/dev`, so keep that path on a volume if
+you use them and want updates to survive restarts.
 
 ## Code editor (code-server)
 
@@ -124,26 +191,29 @@ The Compose and Kubernetes deployments also run
 as a companion container using the official `codercom/code-server` image. It
 is deliberately in its **own container and network namespace** (unlike the
 Chrome sidecar, which shares the main container's network): VS Code's Ports
-panel can then only forward ports inside the code-server container, so the
-main container's loopback-only OpenCode API (`:4096`) and Chrome DevTools
-(`:9222`) stay invisible to it. Do not "simplify" this into
+panel can then only forward ports bound inside the code-server container, so
+Chrome's DevTools endpoint and the OpenCode API stay outside its automatic
+reach. On Kubernetes the openchamber pod runs `hostNetwork` for sshd, which
+makes co-locating the two especially costly — a shared pod would put
+node-bound ports directly on VS Code's radar. Do not "simplify" this into
 `network_mode: service:opencode` or a pod sidecar.
 
 It is not supervised by `start.sh`: it restarts independently, and a
-code-server crash never restarts OpenCode or the web terminal.
+code-server crash never restarts OpenCode or sshd.
 
 - It opens `/workspace`, mounted from the same place as the main container.
   The image's `coder` user is UID 1000, same as `dev`, so files keep
   consistent ownership. The Kubernetes example shares the workspace through
   its single-node hostPath; multi-node clusters need RWX storage, where VS
   Code's file watcher also loses inotify events and falls back to polling.
-- Your `~/.ssh` is mounted read-only, so git over SSH works from VS Code
-  terminals. Extensions come from [Open VSX](https://open-vsx.org), not the
-  Microsoft marketplace, so proprietary extensions are unavailable.
+- Your SSH key directory is mounted read-only (the same directory sshd reads
+  for `authorized_keys`), so git over SSH works from VS Code terminals.
+  Extensions come from [Open VSX](https://open-vsx.org), not the Microsoft
+  marketplace, so proprietary extensions are unavailable.
 - VS Code terminals run inside the code-server container — Debian with git,
   git-lfs, curl and not much else. They are not the main container's
-  environment (no `gh`, `uv`, Node 26, and no access to the shared tmux
-  session); use the web terminal for those.
+  environment (no `gh`, `uv`, Node 26, and they cannot attach to the shared
+  tmux session); SSH in for those.
 - Log in at `http://localhost:8080` (Compose) or `code-server.example.lan`
   (Kubernetes) with `CODE_SERVER_PASSWORD`.
 - The image floats: `latest` with `pull_policy: always` in Compose and
@@ -155,41 +225,53 @@ code-server crash never restarts OpenCode or the web terminal.
 | Variable                 | Required | Default                | Purpose                            |
 | ------------------------ | -------- | ---------------------- | ---------------------------------- |
 | `OPENCHAMBER_PASSWORD`   | Yes      | —                      | OpenChamber UI password.           |
-| `WEB_TERMINAL_PASSWORD`  | No       | `OPENCHAMBER_PASSWORD` | Web terminal password.             |
-| `WEB_TERMINAL_USER`      | No       | `dev`                  | Web terminal username.             |
-| `WEB_TERMINAL_PORT`      | No       | `7681`                 | ttyd listen port.                  |
+| `SSHD_PORT`              | No       | `2222`                 | sshd listen port.                  |
 | `CODE_SERVER_PORT`       | No       | `8080`                 | Host port for code-server (Compose). |
 | `CODE_SERVER_PASSWORD`   | No       | `OPENCHAMBER_PASSWORD` | code-server login password (Compose; the Kubernetes Secret key has the same name). |
 | `OPENCHAMBER_PORT`       | No       | `3000`                 | OpenChamber listen port.           |
 | `OPENCODE_PORT`          | No       | `4096`                 | OpenCode listen port.              |
 | `OPENCODE_HOSTNAME`      | No       | `0.0.0.0`              | OpenCode bind address.             |
 | `OPENCODE_READY_TIMEOUT` | No       | `30`                   | Seconds to wait for OpenCode.      |
+| `GIT_USER_NAME`          | No       | —                      | Global Git commit author name.     |
+| `GIT_USER_EMAIL`         | No       | —                      | Global Git commit author email.    |
 | `GITHUB_TOKEN`           | No       | —                      | Passed through for `gh`.           |
 | `CONTEXT7_API_KEY`       | No       | —                      | Higher Context7 MCP rate limits.   |
 
-Startup fails if `OPENCHAMBER_PASSWORD` is unset, so an unauthenticated
-deployment cannot happen by accident. Supply both passwords from Kubernetes
-Secrets, not the image.
+Startup fails if `OPENCHAMBER_PASSWORD` is unset, or if
+`/home/dev/.ssh/authorized_keys` is missing or empty — the container refuses
+to start an sshd nobody can log into, or an OpenChamber anyone can reach.
+Supply the password from Kubernetes Secrets, not the image. In Compose,
+`SSHD_PORT` and `MOSH_PORT` also set the *host-side* published ports, and
+`SSH_AUTHORIZED_KEYS_DIR` (default `${HOME}/.ssh`) is the directory mounted
+read-only at `/home/dev/.ssh`.
 
 ## Kubernetes
 
 Replace the manifest's placeholders — `USER` (hostPath owner), `example.lan`
-(Ingress DNS suffix), `CHANGEME` (Secret values) — then:
+(Ingress DNS suffix), `CHANGEME` (Secret and Git identity values) — then:
 
 ```bash
 kubectl apply -f kubernetes.yaml
 ```
 
-That creates a namespace, Secret, ConfigMap, two PVCs, two Deployments, one
-NodePort Service, one ClusterIP Service and four Ingresses. The openchamber
-Deployment includes the same headless Chrome sidecar as the Compose setup; the
-code-server Deployment runs browser VS Code in its own pod and network (see
-[Code editor](#code-editor-code-server)). Chrome has its own readiness and liveness probes
+That creates a namespace, Secret, two ConfigMaps, two PVCs, two Deployments,
+one NodePort Service, one ClusterIP Service and three Ingresses. The
+openchamber Deployment includes the same headless Chrome sidecar as the
+Compose setup; the code-server Deployment runs browser VS Code in its own pod
+and network (see [Code editor](#code-editor-code-server)). Chrome has its own
+readiness and liveness probes
 on its pod-local DevTools endpoint; port `9222` is not included in a Service or
 Ingress. One of the existing Ingresses publishes OpenCode's unauthenticated API
 — delete it unless you want port `4096` reachable from the LAN. The image's
 Docker `HEALTHCHECK` is ignored by Kubernetes, which is why the manifest defines
-its own probes. `hostNetwork` is not used; traffic routes through the Ingress.
+its own probes.
+
+The pod runs with `hostNetwork` so sshd binds the node's `:2222` directly —
+SSH is plain TCP and cannot go through the HTTP Ingress. Connect with
+`ssh -p 2222 dev@<node>` (or `mosh -p 60000 --ssh="ssh -p 2222" dev@<node>`;
+the UDP port also binds on the node). Make sure nothing else on the host
+already binds `2222`, `3000` or `4096`, and restrict node-port access at the
+firewall — SSH is key-only, but there is no rate limiting in front of it.
 
 After applying the manifest, confirm Chrome is reachable only from the companion
 OpenCode container:
@@ -203,8 +285,9 @@ kubectl -n openchamber exec deployment/openchamber -c openchamber -- \
     opencode mcp list
 ```
 
-The terminal is a WebSocket. The manifest's Ingress annotations (HTTP/1.1,
-3600s timeouts, buffering off) cover it; nginx handles the upgrade itself.
+The Ingress hosts route plain HTTP with long timeouts and buffering off
+(WebSocket-friendly defaults for OpenChamber, OpenCode and code-server); nginx
+handles any upgrade handshake itself.
 
 ### Persistence
 
@@ -217,8 +300,9 @@ Mount these to survive rescheduling:
 | `/home/dev/.local/share/opencode` | OpenCode sessions and data.         |
 | `/home/dev/.local/state/opencode` | OpenCode runtime state.             |
 | `/home/dev/.config/openchamber`   | OpenChamber configuration.          |
-| `/home/dev/.ssh`                  | Git SSH keys — mount read-only.     |
+| `/home/dev/.ssh`                  | `authorized_keys` + Git keys — read-only. |
 | `/home/dev/.ssh-state`            | `known_hosts`.                      |
+| `/etc/ssh/host-keys`              | sshd host key — stable fingerprints.|
 | `/home/dev/.config/gh`            | GitHub CLI auth (not in the example).|
 | `/home/coder/.local/share/code-server` | code-server data and extensions — own container (Compose volume `code-server-data`, PVC `code-server-pvc`). |
 
@@ -226,13 +310,24 @@ Use Secrets for keys and tokens, PVCs for the rest.
 
 ## Security
 
-- The web terminal is root-equivalent access: `dev` has passwordless sudo.
-- Basic auth is weaker than the key-only sshd this replaced — passwords can be
-  guessed or replayed and ttyd has no rate limiting. Use a long random password,
-  serve it over TLS, and on any untrusted network leave `7681` unexposed and
-  reach it with `kubectl port-forward`.
-- Over plain HTTP the password and everything you type, including pasted
-  secrets, cross the network in cleartext.
+- Shell access is root-equivalent: `dev` has passwordless sudo. A stolen
+  private key with a line in `authorized_keys` owns the container, so treat
+  that file as root-equivalent too — mount it read-only, as the examples do.
+- sshd is configured key-only: `PasswordAuthentication no`,
+  `KbdInteractiveAuthentication no`, `PermitRootLogin no`, `AllowUsers dev`,
+  `MaxAuthTries 3`, `LoginGraceTime 30`. There is still no rate limiting or
+  lockout in front of it — on an untrusted network, keep `2222` behind a
+  firewall or reach the pod with `kubectl port-forward`.
+- The sshd host key lives in `/etc/ssh/host-keys`. Persist it (the examples
+  do) so client fingerprints stay stable across restarts; an unpersisted key
+  regenerates on every container recreation and triggers host-key-mismatch
+  warnings.
+- Mosh derives its session key from the SSH exchange and encrypts all traffic
+  (AES-128 OCB), but it does not encrypt host keystrokes you type *before*
+  the mosh session starts, and a roaming client trusts the network it lands
+  on for UDP delivery. Keep the SSH hop on a trusted path.
+- Agent forwarding (`ssh -A`) exposes your agent socket to the container for
+  as long as you are connected. Only forward to containers you trust.
 - OpenCode's port `4096` has no authentication of any kind.
 - Chrome's DevTools endpoint grants complete control of the browser. Never add
   port `9222` to Docker port publishing, a Kubernetes Service, or an Ingress.
@@ -245,9 +340,9 @@ Use Secrets for keys and tokens, PVCs for the rest.
   filesystem. Keep those controls together; do not reuse the sidecar as a
   general-purpose browser service.
 - code-server runs in its own container and network namespace on purpose: VS
-  Code's Ports panel can only forward ports inside that container, so the main
-  container's unauthenticated OpenCode API (`:4096`) and Chrome's DevTools
-  port (`:9222`) stay unreachable from it. Keep it that way.
+  Code's Ports panel can only forward ports inside that container, which keeps
+  the OpenCode API and Chrome's DevTools endpoint outside its automatic
+  forwarding. Keep it that way.
 - A code-server login is a shell in the code-server container (which has
   passwordless sudo there) plus read-only access to your `~/.ssh`. It is not
   root in the main container, but the SSH keys alone justify a long password
@@ -285,10 +380,10 @@ docker build -t opencode-remote:latest .
 | `YYYYMMDD`    | weekly rebuild — use to roll back a bad week |
 
 The weekly run (Mondays 04:17 UTC) builds with `no-cache` and `pull`, which is
-what picks up new Ubuntu patches and new `opencode-ai`, `@openchamber/web` and
-`backlog.md` releases; a cached rebuild would change nothing. Only `ttyd` is
-pinned (`ARG TTYD_VERSION`, checksum-verified). Every build publishes SBOM and
-provenance attestations.
+what picks up new Ubuntu patches (including `openssh-server` and `mosh`
+security updates) and new `opencode-ai`, `@openchamber/web` and `backlog.md`
+releases; a cached rebuild would change nothing. Every build publishes SBOM
+and provenance attestations.
 
 Two things to know:
 

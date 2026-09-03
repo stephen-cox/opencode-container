@@ -1,7 +1,7 @@
 # Remote dev environment for OpenCode + Openchamber.
 # Route Openchamber 3000 externally. OpenCode 4096 binds 0.0.0.0 by default --
-# protect with trusted network or front it with auth. Shell access is the ttyd
-# web terminal on 7681, behind HTTP basic auth.
+# protect with trusted network or front it with auth. Shell access is sshd on
+# 2222, key authentication only.
 
 FROM ubuntu:26.04
 
@@ -17,14 +17,36 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg tzdata locales sudo \
         rsync less tini \
-        git openssh-client \
+        git openssh-client openssh-server \
         ripgrep fd-find jq \
         python3 python3-venv python3-pip python3-requests \
         python-is-python3 \
-        tmux nano neovim \
+        tmux nano neovim mosh \
         direnv \
     && locale-gen en_US.UTF-8 \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+    && mkdir -p /run/sshd /etc/ssh/host-keys \
+    && printf '%s\n' \
+        'Port 2222' \
+        'PermitRootLogin no' \
+        'PasswordAuthentication no' \
+        'KbdInteractiveAuthentication no' \
+        'PubkeyAuthentication yes' \
+        'AllowUsers dev' \
+        'HostKey /etc/ssh/host-keys/ssh_host_ed25519_key' \
+        'AuthorizedKeysFile /etc/ssh/authorized_keys/%u .ssh/authorized_keys' \
+        'ClientAliveInterval 30' \
+        'ClientAliveCountMax 3' \
+        'LoginGraceTime 30' \
+        'MaxAuthTries 3' \
+        > /etc/ssh/sshd_config.d/00-opencode.conf \
+    && chmod 0644 /etc/ssh/sshd_config.d/00-opencode.conf \
+    && printf '%s\n' \
+        'if [ -n "${SSH_TTY:-}" ] && [ -z "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then' \
+        '    exec tmux new -A -s main -c /workspace' \
+        'fi' \
+        > /etc/profile.d/tmux-attach.sh \
+    && chmod 0644 /etc/profile.d/tmux-attach.sh \
     && printf '%s\n' \
         'export SSH_AUTH_SOCK=/home/dev/.ssh-agent.sock' \
         > /etc/profile.d/ssh-agent.sh \
@@ -36,30 +58,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && chmod 0644 /etc/ssh/ssh_config.d/00-known-hosts.conf \
     && rm -rf /var/lib/apt/lists/*
 
+# System-wide tmux defaults; a user's ~/.tmux.conf still overrides these.
+# Mouse support gives touch scrolling in mobile SSH clients (Blink, Termius).
+RUN printf '%s\n' \
+        'set -g mouse on' \
+        'set -g history-limit 50000' \
+        > /etc/tmux.conf \
+    && chmod 0644 /etc/tmux.conf
+
 RUN arch="$(dpkg --print-architecture)" \
     && curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${arch}" \
         -o /usr/local/bin/yq \
     && chmod 0755 /usr/local/bin/yq
-
-# ttyd serves the web terminal. Static upstream binary, checksum-verified: the
-# distro package lags and a silently-truncated download would otherwise only
-# surface as a broken terminal at runtime.
-ARG TTYD_VERSION=1.7.7
-RUN set -eux; \
-    case "$(dpkg --print-architecture)" in \
-        amd64) ttyd_arch=x86_64 ;; \
-        arm64) ttyd_arch=aarch64 ;; \
-        *) echo "ERROR: unsupported architecture for ttyd: $(dpkg --print-architecture)" >&2; exit 1 ;; \
-    esac; \
-    base="https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}"; \
-    curl -fsSL "${base}/ttyd.${ttyd_arch}" -o /usr/local/bin/ttyd; \
-    curl -fsSL "${base}/SHA256SUMS" -o /tmp/ttyd.sums; \
-    expected="$(awk -v f="ttyd.${ttyd_arch}" '$2 == f { print $1 }' /tmp/ttyd.sums)"; \
-    test -n "${expected}"; \
-    echo "${expected}  /usr/local/bin/ttyd" | sha256sum -c -; \
-    rm -f /tmp/ttyd.sums; \
-    chmod 0755 /usr/local/bin/ttyd; \
-    ttyd --version
 
 # Node 26 via NodeSource's distro-agnostic `nodistro` repo. The version check
 # fails the build if the repo setup silently no-ops, which would otherwise leave
@@ -133,7 +143,7 @@ ENV HOME=/home/dev \
     SHELL=/bin/bash \
     PATH=/home/dev/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
-EXPOSE 3000 4096 7681
+EXPOSE 3000 4096 2222 60000/udp
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -fsS http://127.0.0.1:3000/ >/dev/null || exit 1
