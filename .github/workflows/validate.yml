@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - Dockerfile
+      - start.sh
       - compose.yaml
       - config/**
       - kubernetes.yaml
@@ -13,6 +14,7 @@ on:
     branches: [main]
     paths:
       - Dockerfile
+      - start.sh
       - compose.yaml
       - config/**
       - kubernetes.yaml
@@ -28,9 +30,23 @@ jobs:
     runs-on: ubuntu-latest
     env:
       OPENCHAMBER_PASSWORD: ci-openchamber-password
-      WEB_TERMINAL_PASSWORD: ci-terminal-password
+      GIT_USER_NAME: CI User
+      GIT_USER_EMAIL: ci@example.com
     steps:
       - uses: actions/checkout@v4
+
+      - name: Create CI SSH key
+        env:
+          # The runner context is only valid in step-level env, not job-level.
+          SSH_AUTHORIZED_KEYS_DIR: ${{ runner.temp }}/ci-ssh-keys
+        run: |
+          # Only authorized_keys goes in the mounted dir; the private key stays
+          # outside the container.
+          mkdir -p "${SSH_AUTHORIZED_KEYS_DIR}" ~/.ssh
+          ssh-keygen -t ed25519 -f "${RUNNER_TEMP}/ci_key" -N ''
+          cp "${RUNNER_TEMP}/ci_key.pub" "${SSH_AUTHORIZED_KEYS_DIR}/authorized_keys"
+          echo "SSH_AUTHORIZED_KEYS_DIR=${SSH_AUTHORIZED_KEYS_DIR}" >> "${GITHUB_ENV}"
+          echo "CI_SSH_KEY=${RUNNER_TEMP}/ci_key" >> "${GITHUB_ENV}"
 
       - name: Validate Compose configuration
         run: docker compose config --quiet
@@ -80,6 +96,74 @@ jobs:
           docker compose exec -T opencode opencode mcp list | tee /tmp/opencode-mcp-list.txt
           grep -q chrome-devtools /tmp/opencode-mcp-list.txt
           grep -q context7 /tmp/opencode-mcp-list.txt
+
+      - name: Check global Git identity
+        run: |
+          test "$(docker compose exec -T opencode git config --global --get user.name)" = "${GIT_USER_NAME}"
+          test "$(docker compose exec -T opencode git config --global --get user.email)" = "${GIT_USER_EMAIL}"
+
+      - name: Trust the container SSH host key
+        run: |
+          for attempt in $(seq 1 30); do
+            if ssh-keyscan -p 2222 localhost 2>/dev/null >> ~/.ssh/known_hosts; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::ssh-keyscan never reached sshd on localhost:2222" >&2
+          exit 1
+
+      - name: Check key-authenticated SSH login
+        run: >-
+          ssh -i "${CI_SSH_KEY}"
+          -o StrictHostKeyChecking=yes -o BatchMode=yes
+          -p 2222 dev@localhost 'echo ssh-login-ok'
+
+      - name: Check mosh server is installed
+        run: docker compose exec -T opencode mosh-server --version
+
+      - name: Check interactive SSH attaches to tmux
+        run: |
+          # CI runners have TERM=dumb; tmux needs a real terminal type on the
+          # remote pty, which ssh copies from the local environment.
+          output="$(printf 'echo TMUX_ATTACH_OK && exit\n' | TERM=xterm ssh -tt -i "${CI_SSH_KEY}" \
+            -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            -p 2222 dev@localhost || true)"
+          echo "${output}"
+          echo "${output}" | grep -q TMUX_ATTACH_OK
+
+      - name: Check password authentication is refused
+        run: |
+          if ssh -o BatchMode=yes -o PubkeyAuthentication=no \
+               -o StrictHostKeyChecking=yes -p 2222 dev@localhost true 2>/dev/null; then
+            echo "::error::SSH authenticated without a public key" >&2
+            exit 1
+          fi
+
+      - name: Check root login is refused
+        run: |
+          if ssh -i "${CI_SSH_KEY}" \
+               -o StrictHostKeyChecking=yes -o BatchMode=yes \
+               -p 2222 root@localhost true 2>/dev/null; then
+            echo "::error::SSH root login succeeded" >&2
+            exit 1
+          fi
+
+      - name: Check SSH host key survives a restart
+        run: |
+          # Recreate (not restart) so the ssh-host-keys named volume is the
+          # only thing that could carry the host key across.
+          docker compose up -d --force-recreate opencode
+          for attempt in $(seq 1 30); do
+            if ssh -i "${CI_SSH_KEY}" \
+                 -o StrictHostKeyChecking=yes -o BatchMode=yes \
+                 -p 2222 dev@localhost 'echo host-key-stable' 2>/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::SSH did not come back after recreate (host key may have changed)" >&2
+          exit 1
 
       - name: Confirm DevTools is not published
         run: |
@@ -132,3 +216,12 @@ jobs:
           docker run --rm -v "${PWD}:/work:ro" mikefarah/yq:4.47.2
           -e 'select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "openchamber") | [.env[] | select(.name == "CONTEXT7_API_KEY" and .valueFrom.secretKeyRef.optional == true)] | length == 1'
           /work/kubernetes.yaml
+
+      - name: Validate Git identity wiring
+        run: |
+          docker run --rm -v "${PWD}:/work:ro" mikefarah/yq:4.47.2 \
+            -e 'select(.kind == "ConfigMap" and .metadata.name == "git-identity") | .data.GIT_USER_NAME == "CHANGEME" and .data.GIT_USER_EMAIL == "CHANGEME"' \
+            /work/kubernetes.yaml
+          docker run --rm -v "${PWD}:/work:ro" mikefarah/yq:4.47.2 \
+            -e 'select(.kind == "Deployment") | .spec.template.spec.containers[] | select(.name == "openchamber") | [.env[] | select((.name == "GIT_USER_NAME" or .name == "GIT_USER_EMAIL") and .valueFrom.configMapKeyRef.name == "git-identity")] | length == 2' \
+            /work/kubernetes.yaml

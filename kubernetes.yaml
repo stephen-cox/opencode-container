@@ -2,8 +2,8 @@
 # before applying:
 #
 #   USER          the node's local username, for the hostPath mounts below
-#   example.lan   your own DNS suffix for the three Ingress hosts
-#   CHANGEME      the Secret values
+#   example.lan   your own DNS suffix for the two Ingress hosts
+#   CHANGEME      the Secret and Git identity values
 #
 # The hostPath volumes assume a single node and are convenient for a local
 # cluster; use PersistentVolumeClaims for anything scheduled across nodes.
@@ -44,11 +44,17 @@ metadata:
 type: Opaque
 stringData:
   OPENCHAMBER_PASSWORD: CHANGEME
-  # Basic-auth password for the ttyd web terminal. Omit the key (and the env
-  # entry below) to reuse OPENCHAMBER_PASSWORD instead.
-  WEB_TERMINAL_PASSWORD: CHANGEME
   GITHUB_TOKEN: CHANGEME
   # Optional: add CONTEXT7_API_KEY for higher Context7 rate limits.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: git-identity
+  namespace: openchamber
+data:
+  GIT_USER_NAME: CHANGEME
+  GIT_USER_EMAIL: CHANGEME
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -98,6 +104,11 @@ spec:
       labels:
         app: openchamber
     spec:
+      # hostNetwork lets sshd bind the node's :2222 directly. The SSH port is
+      # plain TCP, so routing it through the HTTP Ingress is not an option;
+      # reach it as `ssh -p 2222 dev@<node>` (or pin a NodePort instead).
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       containers:
         - name: openchamber
           # Published weekly by .github/workflows/publish.yml. With the
@@ -113,20 +124,30 @@ spec:
             - name: opencode
               containerPort: 4096
               protocol: TCP
-            - name: terminal
-              containerPort: 7681
+            - name: ssh
+              containerPort: 2222
               protocol: TCP
+            # Informational with hostNetwork: mosh-server binds this UDP port
+            # on the node when a client connects with `mosh -p 60000`.
+            - name: mosh
+              containerPort: 60000
+              protocol: UDP
           env:
             - name: OPENCHAMBER_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: openchamber-secrets
                   key: OPENCHAMBER_PASSWORD
-            - name: WEB_TERMINAL_PASSWORD
+            - name: GIT_USER_NAME
               valueFrom:
-                secretKeyRef:
-                  name: openchamber-secrets
-                  key: WEB_TERMINAL_PASSWORD
+                configMapKeyRef:
+                  name: git-identity
+                  key: GIT_USER_NAME
+            - name: GIT_USER_EMAIL
+              valueFrom:
+                configMapKeyRef:
+                  name: git-identity
+                  key: GIT_USER_EMAIL
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -156,6 +177,11 @@ spec:
             - name: openchamber-data
               mountPath: /home/dev/.config/openchamber
               subPath: config-openchamber
+            # Persisted sshd host key: client fingerprints stay stable across
+            # pod rescheduling.
+            - name: openchamber-data
+              mountPath: /etc/ssh/host-keys
+              subPath: ssh-host-keys
             - name: opencode-share
               mountPath: /home/dev/.local/share/opencode
             - name: opencode-state
@@ -295,10 +321,6 @@ spec:
       name: opencode
       port: 4096
       targetPort: 4096
-    - protocol: TCP
-      name: terminal
-      port: 7681
-      targetPort: 7681
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -347,29 +369,5 @@ spec:
                 name: openchamber-service
                 port:
                   number: 4096
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: terminal-ingress
-  namespace: openchamber
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-buffering: "off"
-spec:
-  ingressClassName: nginx
-  rules:
-    - host: terminal.example.lan
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: openchamber-service
-                port:
-                  number: 7681
-# Shell access is the ttyd web terminal above; there is no sshd, so the pod no
-# longer needs hostNetwork to bind a node port.
+# Shell access is sshd above, bound directly on the node via hostNetwork; no
+# Service or Ingress entry is needed for port 2222.
