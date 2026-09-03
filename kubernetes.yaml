@@ -47,6 +47,9 @@ stringData:
   # Basic-auth password for the ttyd web terminal. Omit the key (and the env
   # entry below) to reuse OPENCHAMBER_PASSWORD instead.
   WEB_TERMINAL_PASSWORD: CHANGEME
+  # Login password for the code-server container. Set it to the same value as
+  # OPENCHAMBER_PASSWORD for a single-secret deployment.
+  CODE_SERVER_PASSWORD: CHANGEME
   GITHUB_TOKEN: CHANGEME
   # Optional: add CONTEXT7_API_KEY for higher Context7 rate limits.
 ---
@@ -373,3 +376,148 @@ spec:
                   number: 7681
 # Shell access is the ttyd web terminal above; there is no sshd, so the pod no
 # longer needs hostNetwork to bind a node port.
+---
+# Browser VS Code in its own pod on purpose: in its own network namespace VS
+# Code's Ports panel can only forward ports inside the code-server container,
+# so this namespace's loopback-only OpenCode API (:4096) and Chrome DevTools
+# (:9222) stay invisible to it. Do not move this into the openchamber pod as a
+# sidecar — that would share the network namespace and reopen that exposure.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: code-server-pvc
+  namespace: openchamber
+spec:
+  storageClassName: openchamber-storage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: code-server
+  namespace: openchamber
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: code-server
+  template:
+    metadata:
+      labels:
+        app: code-server
+    spec:
+      containers:
+        - name: code-server
+          image: codercom/code-server:latest
+          # `latest` floats — Always is what picks up each new release, the
+          # same reasoning as the openchamber image above.
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openchamber-secrets
+                  key: CODE_SERVER_PASSWORD
+            - name: VSCODE_OPTIONS
+              value: --disable-telemetry
+          workingDir: /workspace
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # Deliberately lighter than the chrome sidecar's: the code-server
+          # image relies on a setuid fixuid helper at startup, which
+          # no-new-privileges hardening would break. The container is
+          # password-gated and isolated in its own pod and network.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: code-server-data
+              mountPath: /home/coder/.local/share/code-server
+            # Read-only SSH keys so git over SSH works from VS Code terminals.
+            # The image's coder user is UID 1000, same as the host user the
+            # hostPath volumes assume.
+            - name: ssh
+              mountPath: /home/coder/.ssh
+              readOnly: true
+      volumes:
+        # Same hostPath as the openchamber pod — fine for the single-node
+        # example this manifest targets; a multi-node cluster needs RWX
+        # storage for /workspace here instead.
+        - name: workspace
+          hostPath:
+            path: /home/USER/workspace
+            type: Directory
+        - name: code-server-data
+          persistentVolumeClaim:
+            claimName: code-server-pvc
+        - name: ssh
+          hostPath:
+            path: /home/USER/.ssh
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: code-server-service
+  namespace: openchamber
+spec:
+  selector:
+    app: code-server
+  ports:
+    - protocol: TCP
+      name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: code-server-ingress
+  namespace: openchamber
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: code-server.example.lan
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: code-server-service
+                port:
+                  number: 8080

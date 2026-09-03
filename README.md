@@ -3,12 +3,16 @@
 A browser-based remote dev environment — OpenCode, OpenChamber and a
 [ttyd](https://github.com/tsl0922/ttyd) web terminal in one container. Runs
 under Docker or Kubernetes; [`kubernetes.yaml`](kubernetes.yaml) is a worked
-MicroK8s example (no Helm chart).
+MicroK8s example (no Helm chart). The Compose and Kubernetes deployments add
+two companion containers: headless Chrome for the DevTools MCP, and
+[code-server](https://github.com/coder/code-server) for browser VS Code.
 
 ## What's inside
 
 OpenCode, OpenChamber, backlog.md, GitHub CLI, uv, Node 26, Python 3.14, git,
-tmux, neovim, nano, ripgrep, fd, jq, yq, direnv.
+tmux, neovim, nano, ripgrep, fd, jq, yq, direnv. code-server and Chrome are
+not baked into this image — they run as separate companion containers in the
+Compose and Kubernetes deployments.
 
 There is no C toolchain — `build-essential` and `python3-dev` are left out to
 keep the image small, and prebuilt wheels and npm prebuilds cover normal use. If
@@ -96,6 +100,7 @@ kubectl -n openchamber exec deployment/openchamber -c openchamber -- \
 | ------ | ----------------- | ------------------------------------- | ---------------------------------------- |
 | `3000` | OpenChamber UI    | `OPENCHAMBER_PASSWORD`                | Yes                                      |
 | `7681` | ttyd web terminal | Basic auth, `dev` + password          | Yes, over TLS                            |
+| `8080` | code-server       | Password login (`CODE_SERVER_PASSWORD`) | Yes, over TLS                          |
 | `4096` | OpenCode API      | **None**                              | No — trusted LAN or authenticating proxy |
 
 A fourth process, ssh-agent, listens on `/home/dev/.ssh-agent.sock`.
@@ -112,6 +117,39 @@ Closing the tab leaves work running and reopening reattaches to it; a second
 device joins the *same* session, so run `tmux new -s other` if you want an
 independent one.
 
+## Code editor (code-server)
+
+The Compose and Kubernetes deployments also run
+[code-server](https://github.com/coder/code-server) — VS Code in the browser —
+as a companion container using the official `codercom/code-server` image. It
+is deliberately in its **own container and network namespace** (unlike the
+Chrome sidecar, which shares the main container's network): VS Code's Ports
+panel can then only forward ports inside the code-server container, so the
+main container's loopback-only OpenCode API (`:4096`) and Chrome DevTools
+(`:9222`) stay invisible to it. Do not "simplify" this into
+`network_mode: service:opencode` or a pod sidecar.
+
+It is not supervised by `start.sh`: it restarts independently, and a
+code-server crash never restarts OpenCode or the web terminal.
+
+- It opens `/workspace`, mounted from the same place as the main container.
+  The image's `coder` user is UID 1000, same as `dev`, so files keep
+  consistent ownership. The Kubernetes example shares the workspace through
+  its single-node hostPath; multi-node clusters need RWX storage, where VS
+  Code's file watcher also loses inotify events and falls back to polling.
+- Your `~/.ssh` is mounted read-only, so git over SSH works from VS Code
+  terminals. Extensions come from [Open VSX](https://open-vsx.org), not the
+  Microsoft marketplace, so proprietary extensions are unavailable.
+- VS Code terminals run inside the code-server container — Debian with git,
+  git-lfs, curl and not much else. They are not the main container's
+  environment (no `gh`, `uv`, Node 26, and no access to the shared tmux
+  session); use the web terminal for those.
+- Log in at `http://localhost:8080` (Compose) or `code-server.example.lan`
+  (Kubernetes) with `CODE_SERVER_PASSWORD`.
+- The image floats: `latest` with `pull_policy: always` in Compose and
+  `imagePullPolicy: Always` in Kubernetes, so the next `docker compose up` or
+  pod restart picks up new releases.
+
 ## Environment variables
 
 | Variable                 | Required | Default                | Purpose                            |
@@ -120,6 +158,8 @@ independent one.
 | `WEB_TERMINAL_PASSWORD`  | No       | `OPENCHAMBER_PASSWORD` | Web terminal password.             |
 | `WEB_TERMINAL_USER`      | No       | `dev`                  | Web terminal username.             |
 | `WEB_TERMINAL_PORT`      | No       | `7681`                 | ttyd listen port.                  |
+| `CODE_SERVER_PORT`       | No       | `8080`                 | Host port for code-server (Compose). |
+| `CODE_SERVER_PASSWORD`   | No       | `OPENCHAMBER_PASSWORD` | code-server login password (Compose; the Kubernetes Secret key has the same name). |
 | `OPENCHAMBER_PORT`       | No       | `3000`                 | OpenChamber listen port.           |
 | `OPENCODE_PORT`          | No       | `4096`                 | OpenCode listen port.              |
 | `OPENCODE_HOSTNAME`      | No       | `0.0.0.0`              | OpenCode bind address.             |
@@ -140,9 +180,11 @@ Replace the manifest's placeholders — `USER` (hostPath owner), `example.lan`
 kubectl apply -f kubernetes.yaml
 ```
 
-That creates a namespace, Secret, ConfigMap, 4Gi PVC, Deployment, one NodePort
-Service and three Ingresses. The Deployment includes the same headless Chrome
-sidecar as the Compose setup. Chrome has its own readiness and liveness probes
+That creates a namespace, Secret, ConfigMap, two PVCs, two Deployments, one
+NodePort Service, one ClusterIP Service and four Ingresses. The openchamber
+Deployment includes the same headless Chrome sidecar as the Compose setup; the
+code-server Deployment runs browser VS Code in its own pod and network (see
+[Code editor](#code-editor-code-server)). Chrome has its own readiness and liveness probes
 on its pod-local DevTools endpoint; port `9222` is not included in a Service or
 Ingress. One of the existing Ingresses publishes OpenCode's unauthenticated API
 — delete it unless you want port `4096` reachable from the LAN. The image's
@@ -154,6 +196,7 @@ OpenCode container:
 
 ```bash
 kubectl -n openchamber rollout status deployment/openchamber
+kubectl -n openchamber rollout status deployment/code-server
 kubectl -n openchamber exec deployment/openchamber -c openchamber -- \
     curl -fsS http://127.0.0.1:9222/json/version
 kubectl -n openchamber exec deployment/openchamber -c openchamber -- \
@@ -177,6 +220,7 @@ Mount these to survive rescheduling:
 | `/home/dev/.ssh`                  | Git SSH keys — mount read-only.     |
 | `/home/dev/.ssh-state`            | `known_hosts`.                      |
 | `/home/dev/.config/gh`            | GitHub CLI auth (not in the example).|
+| `/home/coder/.local/share/code-server` | code-server data and extensions — own container (Compose volume `code-server-data`, PVC `code-server-pvc`). |
 
 Use Secrets for keys and tokens, PVCs for the rest.
 
@@ -200,6 +244,18 @@ Use Secrets for keys and tokens, PVCs for the rest.
   Linux capabilities dropped, no privilege escalation and a read-only root
   filesystem. Keep those controls together; do not reuse the sidecar as a
   general-purpose browser service.
+- code-server runs in its own container and network namespace on purpose: VS
+  Code's Ports panel can only forward ports inside that container, so the main
+  container's unauthenticated OpenCode API (`:4096`) and Chrome's DevTools
+  port (`:9222`) stay unreachable from it. Keep it that way.
+- A code-server login is a shell in the code-server container (which has
+  passwordless sudo there) plus read-only access to your `~/.ssh`. It is not
+  root in the main container, but the SSH keys alone justify a long password
+  and TLS.
+- The Kubernetes code-server pod is hardened less than the Chrome sidecar —
+  the image's `fixuid` setuid helper conflicts with no-new-privileges
+  hardening. It is still non-root, seccomp-confined, and code-server
+  rate-limits password attempts.
 - Never bake tokens or keys into the image; pass them at runtime.
 - Requires an AVX2-capable x86-64 CPU (Haswell, 2013 or later).
 

@@ -20,6 +20,43 @@ services:
       - opencode-state:/home/dev/.local/state/opencode
       - openchamber-config:/home/dev/.config/openchamber
 
+  # Browser VS Code. Deliberately NOT on the opencode container's network
+  # (unlike the chrome sidecar above): in its own network namespace VS Code's
+  # Ports panel can only forward ports inside this container, so the opencode
+  # container's loopback-only OpenCode API (:4096) and Chrome DevTools (:9222)
+  # stay invisible to it. Do not "simplify" this to network_mode: service:opencode.
+  code-server:
+    image: codercom/code-server:latest
+    # `latest` floats — always pull so `docker compose up` picks up new
+    # releases instead of freezing on whatever was pulled first.
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      # Falls back to OPENCHAMBER_PASSWORD like WEB_TERMINAL_PASSWORD does.
+      PASSWORD: ${CODE_SERVER_PASSWORD:-${OPENCHAMBER_PASSWORD}}
+      VSCODE_OPTIONS: --disable-telemetry
+    ports:
+      - "${CODE_SERVER_PORT:-8080}:8080"
+    # The image's `coder` user is UID 1000, same as `dev`, so files written to
+    # the shared workspace keep consistent ownership across the containers.
+    # The image ships git, curl and openssh-client; the read-only ~/.ssh mount
+    # enables git over SSH from VS Code terminals.
+    working_dir: /workspace
+    volumes:
+      - "${WORKSPACE:-.}:/workspace"
+      - "${HOME}/.ssh:/home/coder/.ssh:ro"
+      - code-server-data:/home/coder/.local/share/code-server
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - http://127.0.0.1:8080/healthz
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
   chrome:
     image: ghcr.io/puppeteer/puppeteer:25.9.0
     network_mode: service:opencode
@@ -67,3 +104,4 @@ volumes:
   opencode-share:
   opencode-state:
   openchamber-config:
+  code-server-data:
