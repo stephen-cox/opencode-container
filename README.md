@@ -40,6 +40,7 @@ while OpenCode runs the `chrome-devtools-mcp` process locally over stdio:
 ```bash
 export OPENCHAMBER_PASSWORD='<ui-password>'
 export WEB_TERMINAL_PASSWORD='<shell-password>'
+# Optional: export CONTEXT7_API_KEY='<context7-api-key>'
 export WORKSPACE="${PWD}"
 docker compose up -d --build
 ```
@@ -63,7 +64,31 @@ OpenChamber state.
 The MCP configuration is injected as an additional config through
 `OPENCODE_CONFIG`, so it merges with rather than replaces the user's config in
 `/home/dev/.config/opencode`. OpenCode loads configuration only at startup;
-restart the deployment after changing `config/chrome-devtools.json`.
+restart the deployment after changing `config/opencode.json`.
+
+### Context7 MCP
+
+The Compose and Kubernetes deployments also register the hosted Context7 MCP at
+`https://mcp.context7.com/mcp`. It provides current, version-specific library
+documentation. Ask OpenCode to `use context7` when a prompt needs library or API
+documentation.
+
+`CONTEXT7_API_KEY` is optional. Without it, Context7 uses its anonymous rate
+limit. For higher limits, create a key in the
+[Context7 dashboard](https://context7.com/dashboard) and export it before
+starting Compose as shown above. The key is passed at runtime and is not stored
+in the image or OpenCode configuration.
+
+For Kubernetes, add `CONTEXT7_API_KEY` to the `openchamber-secrets` Secret in
+`kubernetes.yaml`, or manage that key with your normal Secret tooling. Omit the
+key to use anonymous access. Restart the Compose deployment or roll out the
+Kubernetes Deployment after adding or changing the key, then verify the server:
+
+```bash
+docker compose exec opencode opencode mcp list
+kubectl -n openchamber exec deployment/openchamber -c openchamber -- \
+    opencode mcp list
+```
 
 ## Processes and ports
 
@@ -100,6 +125,7 @@ independent one.
 | `OPENCODE_HOSTNAME`      | No       | `0.0.0.0`              | OpenCode bind address.             |
 | `OPENCODE_READY_TIMEOUT` | No       | `30`                   | Seconds to wait for OpenCode.      |
 | `GITHUB_TOKEN`           | No       | —                      | Passed through for `gh`.           |
+| `CONTEXT7_API_KEY`       | No       | —                      | Higher Context7 MCP rate limits.   |
 
 Startup fails if `OPENCHAMBER_PASSWORD` is unset, so an unauthenticated
 deployment cannot happen by accident. Supply both passwords from Kubernetes

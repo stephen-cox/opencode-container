@@ -7,13 +7,14 @@ services:
     environment:
       OPENCHAMBER_PASSWORD: ${OPENCHAMBER_PASSWORD:?OPENCHAMBER_PASSWORD must be set}
       WEB_TERMINAL_PASSWORD: ${WEB_TERMINAL_PASSWORD:-}
-      OPENCODE_CONFIG: /etc/opencode/chrome-devtools.json
+      CONTEXT7_API_KEY: ${CONTEXT7_API_KEY:-}
+      OPENCODE_CONFIG: /etc/opencode/opencode.json
     ports:
       - "${OPENCHAMBER_PORT:-3000}:3000"
       - "${WEB_TERMINAL_PORT:-7681}:7681"
     volumes:
       - "${WORKSPACE:-.}:/workspace"
-      - ./config/chrome-devtools.json:/etc/opencode/chrome-devtools.json:ro
+      - ./config/opencode.json:/etc/opencode/opencode.json:ro
       - opencode-config:/home/dev/.config/opencode
       - opencode-share:/home/dev/.local/share/opencode
       - opencode-state:/home/dev/.local/state/opencode

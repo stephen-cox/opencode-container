@@ -48,6 +48,7 @@ stringData:
   # entry below) to reuse OPENCHAMBER_PASSWORD instead.
   WEB_TERMINAL_PASSWORD: CHANGEME
   GITHUB_TOKEN: CHANGEME
+  # Optional: add CONTEXT7_API_KEY for higher Context7 rate limits.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -70,6 +71,14 @@ data:
           ],
           "enabled": true,
           "timeout": 15000
+        },
+        "context7": {
+          "type": "remote",
+          "url": "https://mcp.context7.com/mcp",
+          "headers": {
+            "Authorization": "Bearer {env:CONTEXT7_API_KEY}"
+          },
+          "enabled": true
         }
       }
     }
@@ -123,6 +132,12 @@ spec:
                 secretKeyRef:
                   name: openchamber-secrets
                   key: GITHUB_TOKEN
+            - name: CONTEXT7_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openchamber-secrets
+                  key: CONTEXT7_API_KEY
+                  optional: true
             - name: OPENCODE_CONFIG
               value: /etc/opencode/chrome-devtools/opencode.json
           readinessProbe:
