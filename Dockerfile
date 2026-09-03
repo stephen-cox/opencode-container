@@ -34,6 +34,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         'PubkeyAuthentication yes' \
         'AllowUsers dev' \
         'HostKey /etc/ssh/host-keys/ssh_host_ed25519_key' \
+        'AuthorizedKeysFile /etc/ssh/authorized_keys/%u .ssh/authorized_keys' \
         'ClientAliveInterval 30' \
         'ClientAliveCountMax 3' \
         'LoginGraceTime 30' \

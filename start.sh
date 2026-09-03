@@ -89,8 +89,16 @@ ssh_agent_pid=$!
 # a persisted path so client fingerprints survive container restarts. The
 # ClientAlive keepalives in sshd_config reap dead mobile clients instead of
 # leaving them holding the shared tmux session.
+#
+# StrictModes rejects authorized_keys not owned by dev or root, and a bind
+# mount keeps the HOST's uid (CI runners use 1001, macOS 501...). Copy the
+# delivered keys to a root-owned path at every boot; AuthorizedKeysFile lists
+# it first, and .ssh/authorized_keys remains a live second source for keys
+# added interactively.
 echo "[start] sshd on :${SSHD_PORT}"
-sudo mkdir -p /run/sshd /etc/ssh/host-keys
+sudo mkdir -p /run/sshd /etc/ssh/host-keys /etc/ssh/authorized_keys
+sudo cp "${HOME}/.ssh/authorized_keys" /etc/ssh/authorized_keys/dev
+sudo chmod 0644 /etc/ssh/authorized_keys/dev
 if [ ! -f /etc/ssh/host-keys/ssh_host_ed25519_key ]; then
     sudo ssh-keygen -q -t ed25519 -f /etc/ssh/host-keys/ssh_host_ed25519_key -N ''
 fi

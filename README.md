@@ -120,6 +120,13 @@ the public keys live in `/home/dev/.ssh/authorized_keys`, typically delivered
 by mounting your `~/.ssh` read-only. Startup fails closed if that file is
 missing or empty.
 
+A bind mount keeps the *host's* uid on that file, and sshd's `StrictModes`
+rejects key files owned by neither `dev` nor root — which would lock out
+anyone whose host uid isn't 1000 (CI runners use 1001, macOS 501). `start.sh`
+therefore copies the delivered keys to a root-owned path on every boot, and
+`AuthorizedKeysFile` lists that copy first; `~/.ssh/authorized_keys` stays a
+live second source for keys you add interactively inside the container.
+
 Every interactive login attaches to one shared tmux session (`main`, in
 `/workspace`, via `/etc/profile.d/tmux-attach.sh`). Dropping a connection
 leaves work running and reconnecting reattaches to it; a second device joins
