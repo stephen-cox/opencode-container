@@ -6,15 +6,19 @@ services:
     restart: unless-stopped
     environment:
       OPENCHAMBER_PASSWORD: ${OPENCHAMBER_PASSWORD:?OPENCHAMBER_PASSWORD must be set}
-      WEB_TERMINAL_PASSWORD: ${WEB_TERMINAL_PASSWORD:-}
+      GIT_USER_NAME: ${GIT_USER_NAME:-}
+      GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
       CONTEXT7_API_KEY: ${CONTEXT7_API_KEY:-}
       OPENCODE_CONFIG: /etc/opencode/opencode.json
     ports:
       - "${OPENCHAMBER_PORT:-3000}:3000"
-      - "${WEB_TERMINAL_PORT:-7681}:7681"
+      - "${SSHD_PORT:-2222}:2222"
+      - "${MOSH_PORT:-60000}:60000/udp"
     volumes:
       - "${WORKSPACE:-.}:/workspace"
       - ./config/opencode.json:/etc/opencode/opencode.json:ro
+      - "${SSH_AUTHORIZED_KEYS_DIR:-${HOME}/.ssh}:/home/dev/.ssh:ro"
+      - ssh-host-keys:/etc/ssh/host-keys
       - opencode-config:/home/dev/.config/opencode
       - opencode-share:/home/dev/.local/share/opencode
       - opencode-state:/home/dev/.local/state/opencode
@@ -63,6 +67,7 @@ services:
       start_period: 20s
 
 volumes:
+  ssh-host-keys:
   opencode-config:
   opencode-share:
   opencode-state:
