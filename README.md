@@ -9,8 +9,9 @@ two companion containers: headless Chrome for the DevTools MCP, and
 
 ## What's inside
 
-OpenCode, OpenChamber, backlog.md, GitHub CLI, uv, Node 26, Python 3.14, git,
-tmux, neovim, nano, ripgrep, fd, jq, yq, direnv, mosh. code-server and Chrome
+OpenCode, OpenChamber, backlog.md, GitHub CLI, uv, Node 26, Python 3.14,
+PHP 8.5 (CLI) with Composer, git, tmux, neovim, nano, ripgrep, fd, jq, yq,
+direnv, mosh. code-server and Chrome
 are not baked into this image — they run as separate companion containers in
 the Compose and Kubernetes deployments.
 

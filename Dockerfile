@@ -93,6 +93,36 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# PHP (Ubuntu 26.04's default, 8.5) for CLI work. date, filter, hash, json,
+# pcre, PDO, session, SPL and tokenizer are compiled into php-cli; php-xml
+# adds dom, SimpleXML and xml; php-gd adds gd. mbstring, curl and zip keep
+# Composer happy; unzip is what Composer uses to unpack dist archives. The
+# extension loop fails the build if distro packaging ever drops one.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        php-cli php-xml php-gd php-mbstring php-curl php-zip unzip; \
+    php_missing=""; \
+    for ext in date dom filter gd hash json pcre pdo session simplexml spl tokenizer xml mbstring curl zip; do \
+        php -r "extension_loaded('${ext}') or exit(1);" || php_missing="${php_missing} ${ext}"; \
+    done; \
+    if [ -n "${php_missing}" ]; then \
+        echo "ERROR: missing PHP extensions:${php_missing}" >&2; \
+        exit 1; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+
+# Latest Composer via the official installer. Unpinned on purpose: the weekly
+# no-cache rebuild picks up new releases. The version check fails the build if
+# upstream ever drifts -- same idea as the Node 26 check above.
+RUN set -eux; \
+    curl -fsSL https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer; \
+    composer_version="$(composer --version)"; \
+    case "${composer_version}" in \
+        "Composer version 2."*) echo "installed ${composer_version}" ;; \
+        *) echo "ERROR: expected Composer 2.x, got: ${composer_version}" >&2; exit 1 ;; \
+    esac
+
 RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
 
 # `npm cache clean` matters here: `npm install -g` leaves the downloaded
