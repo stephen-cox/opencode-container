@@ -68,6 +68,10 @@ data:
   opencode.json: |
     {
       "$schema": "https://opencode.ai/config.json",
+      "instructions": [
+        "/etc/opencode/environment.md",
+        "/etc/opencode/chrome-devtools/kubernetes.md"
+      ],
       "mcp": {
         "chrome-devtools": {
           "type": "local",
@@ -91,6 +95,33 @@ data:
         }
       }
     }
+  kubernetes.md: |
+    # Kubernetes deployment context
+
+    You run in the `openchamber` container of the OpenChamber Kubernetes
+    Deployment. This is not a shell directly on the Kubernetes node.
+
+    - `/workspace` is a persistent hostPath mount shared with the separate
+      code-server Deployment. Edits affect real files on the host and are visible
+      to the editor. Do not treat the workspace as disposable container storage.
+    - OpenCode config, session data and runtime state, OpenChamber config, SSH
+      host keys and known-hosts state are persisted by the example's mounts.
+      Other container filesystem changes are not guaranteed to survive replacement.
+    - `/home/dev/.ssh` is mounted read-only. Do not modify or disclose its keys.
+    - The pod uses `hostNetwork: true`: listening services bind in the node's
+      network namespace. Check for port conflicts and ask before exposing a
+      development server. A localhost port here is not isolated from the node.
+    - Chrome runs in a sidecar, reached by the configured Chrome DevTools MCP
+      through `http://127.0.0.1:9222`. It shares networking, not the workspace or
+      filesystem. Its profile is ephemeral. Do not expose the DevTools endpoint.
+    - code-server runs in its own pod and network namespace. Its terminal has
+      different tools; its localhost is not this container's localhost.
+    - Running in Kubernetes does not imply `kubectl`, cluster credentials, or
+      permission to administer the cluster. Use an operator's external shell for
+      deployment commands unless access is explicitly provided and approved.
+
+    These facts describe the supplied Kubernetes example. Keep this document in
+    sync when changing its mounts, networking, or companion containers.
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -54,6 +54,11 @@ jobs:
       - name: Build the OpenCode image
         run: docker compose build opencode
 
+      - name: Check packaged environment instructions as the default user
+        run: |
+          docker run --rm --entrypoint cat opencode-remote:chrome-mcp \
+            /etc/opencode/environment.md | cmp config/environment.md -
+
       - name: Check the MCP executable
         run: >-
           docker run --rm --entrypoint chrome-devtools-mcp

@@ -101,6 +101,63 @@ kubectl -n openchamber exec deployment/openchamber -c openchamber -- \
     opencode mcp list
 ```
 
+### Agent environment context
+
+The Compose and Kubernetes examples automatically load a curated environment
+description into OpenCode's agent context, including sessions opened through
+OpenChamber. No custom agent, plugin, or runtime software scan is required.
+
+- [`config/environment.md`](config/environment.md) is the single maintained
+  software inventory and general container description. It is baked into the
+  image at `/etc/opencode/environment.md`. Update it whenever the Dockerfile
+  adds, removes, or changes a deliberately targeted software version. It is not
+  a live inventory; agents should check exact versions when relevant.
+- `config/opencode.json` loads that file through OpenCode's `instructions`
+  setting for Compose. Kubernetes includes the same setting in its existing
+  `chrome-devtools-mcp` ConfigMap, plus a `kubernetes.md` key mounted at
+  `/etc/opencode/chrome-devtools/kubernetes.md`. That second document describes
+  host networking, persistent mounts, and the companion-container boundaries.
+  Update it when adapting the Kubernetes example to a different topology.
+- These instructions are additive to personal and project `AGENTS.md` rules;
+  nothing is written into the mounted `/home/dev/.config/opencode` directory.
+  They describe capabilities, not permission to perform privileged operations.
+  Do not put secrets or environment-variable dumps in either document.
+
+For a bare `docker run` or a custom deployment, the inventory is present in the
+image but must be referenced by your OpenCode configuration:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["/etc/opencode/environment.md"]
+}
+```
+
+Merge this field into your existing configuration rather than replacing it.
+Changes to the inventory require a rebuilt image; changes to configuration
+require restarting OpenCode. For Compose, rebuild and recreate with
+`docker compose up -d --build` using the environment from the quick start.
+
+For Kubernetes, first publish an image containing the updated inventory and
+ensure your adapted manifest references it. Then run these commands from an
+operator's machine with cluster access, not from the development container:
+
+```bash
+kubectl apply -f kubernetes.yaml
+kubectl -n openchamber rollout restart deployment/openchamber
+kubectl -n openchamber rollout status deployment/openchamber
+kubectl -n openchamber exec deployment/openchamber -c openchamber -- \
+    test -r /etc/opencode/environment.md
+kubectl -n openchamber exec deployment/openchamber -c openchamber -- \
+    test -r /etc/opencode/chrome-devtools/kubernetes.md
+```
+
+The explicit restart also reloads ConfigMap-only changes. Open a fresh session
+in OpenChamber and ask: "Using your supplied environment instructions, summarize
+where your tools run, which software is installed, what persists, and whether
+Chrome and code-server share your filesystem and network." Confirm the answer
+matches the two documents; file readability alone does not prove prompt loading.
+
 ## Processes and ports
 
 | Port        | Process           | Authentication                        | Expose externally?                       |
@@ -367,7 +424,9 @@ manifest; tune those values for the pages and traces you run.
 docker build -t opencode-remote:latest .
 ```
 
-`start.sh` is the only file copied in; `.dockerignore` excludes the rest.
+Only `start.sh` and `config/environment.md` are copied in; `.dockerignore`
+excludes the rest. CI checks that the packaged inventory is readable by the
+image's default user and exactly matches the maintained source document.
 
 ## Published image
 

@@ -165,6 +165,7 @@ RUN set -eux; \
     chown -R dev:dev /workspace /home/dev/.ssh-state /home/dev/.config /home/dev/.local
 
 COPY --chmod=0755 start.sh /usr/local/bin/start.sh
+COPY --chmod=0644 config/environment.md /etc/opencode/environment.md
 
 USER dev
 WORKDIR /workspace

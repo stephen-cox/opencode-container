@@ -1,4 +1,6 @@
-# start.sh is the only file COPYed into the image, so deny everything and
-# re-admit it. Add a matching "!" line if a future COPY needs another file.
+# Deny everything except files copied into the image.
 *
 !start.sh
+!config/
+config/*
+!config/environment.md
