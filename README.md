@@ -165,7 +165,7 @@ matches the two documents; file readability alone does not prove prompt loading.
 | `3000`      | OpenChamber UI    | `OPENCHAMBER_PASSWORD`                | Yes                                      |
 | `2222/tcp`  | sshd              | Public key only, `dev` user           | Yes — SSH encrypts its own traffic       |
 | `8080`      | code-server       | Password login (`CODE_SERVER_PASSWORD`) | Yes, over TLS                          |
-| `4096`      | OpenCode API      | **None**                              | No — trusted LAN or authenticating proxy |
+| `4096`      | OpenCode API      | HTTP Basic, user `opencode`, `OPENCODE_PASSWORD` | No — trusted LAN or authenticating proxy |
 | `60000/udp` | mosh-server       | Via SSH, then session keys            | Optional — only if you use Mosh          |
 
 A fourth process, ssh-agent, listens on `/home/dev/.ssh-agent.sock`.
@@ -289,6 +289,7 @@ code-server crash never restarts OpenCode or sshd.
 | `OPENCHAMBER_PORT`       | No       | `3000`                 | OpenChamber listen port.           |
 | `OPENCODE_PORT`          | No       | `4096`                 | OpenCode listen port.              |
 | `OPENCODE_HOSTNAME`      | No       | `0.0.0.0`              | OpenCode bind address.             |
+| `OPENCODE_PASSWORD`      | No       | random per boot        | OpenCode API password, shared with OpenChamber. Set it to call `:4096` directly. |
 | `OPENCODE_READY_TIMEOUT` | No       | `30`                   | Seconds to wait for OpenCode.      |
 | `GIT_USER_NAME`          | No       | —                      | Global Git commit author name.     |
 | `GIT_USER_EMAIL`         | No       | —                      | Global Git commit author email.    |

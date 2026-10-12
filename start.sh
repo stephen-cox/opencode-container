@@ -29,6 +29,14 @@ if [ -n "${GIT_USER_EMAIL:-}" ]; then
     git config --global user.email "${GIT_USER_EMAIL}"
 fi
 
+# OpenCode 2 refuses unauthenticated requests: without a password, `serve`
+# invents one and OpenChamber gets 401 on every call. Share one password between
+# them; set OPENCODE_PASSWORD to reach :4096 directly, otherwise a random one is
+# generated per boot. OpenChamber still reads the legacy name.
+OPENCODE_PASSWORD="${OPENCODE_PASSWORD:-$(head -c 32 /dev/urandom | base64 | tr -d '/+=')}"
+export OPENCODE_PASSWORD
+export OPENCODE_SERVER_PASSWORD="${OPENCODE_PASSWORD}"
+
 mkdir -p /tmp/logs
 cd /workspace
 

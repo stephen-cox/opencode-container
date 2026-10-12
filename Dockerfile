@@ -170,8 +170,12 @@ RUN set -eux; \
         /home/dev/.config/openchamber \
         /home/dev/.local/share/opencode \
         /home/dev/.local/state/opencode; \
-    chown -R dev:dev /workspace /home/dev/.ssh-state /home/dev/.config /home/dev/.local
+    chown -R dev:dev /workspace /home/dev/.ssh-state /home/dev/.config /home/dev/.local; \
+    install -d -m 0755 /etc/opencode
 
+# /etc/opencode must exist before the COPY below: BuildKit applies --chmod to
+# any parent directory the COPY creates, and a 0644 directory cannot be
+# traversed, which hides environment.md and the mounted opencode.json from dev.
 COPY --chmod=0755 start.sh /usr/local/bin/start.sh
 COPY --chmod=0644 config/environment.md /etc/opencode/environment.md
 

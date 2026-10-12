@@ -98,9 +98,19 @@ jobs:
 
       - name: Check MCP registration
         run: |
-          docker compose exec -T opencode opencode mcp list | tee /tmp/opencode-mcp-list.txt
-          grep -q chrome-devtools /tmp/opencode-mcp-list.txt
-          grep -q context7 /tmp/opencode-mcp-list.txt
+          # OpenCode 2's CLI talks to a background service that the first call
+          # starts, and that service only boots its MCP servers on first use, so
+          # an early `mcp list` reports none. Poll until both are listed.
+          for attempt in $(seq 1 12); do
+            docker compose exec -T opencode opencode mcp list | tee /tmp/opencode-mcp-list.txt
+            if grep -q chrome-devtools /tmp/opencode-mcp-list.txt \
+              && grep -q context7 /tmp/opencode-mcp-list.txt; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error title=MCP registration::chrome-devtools and context7 were not both listed"
+          exit 1
 
       - name: Check global Git identity
         run: |
