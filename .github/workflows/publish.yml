@@ -11,7 +11,7 @@ on:
   schedule:
     # Weekly rebuild. This is what keeps the image current: the base image's
     # security patches, apt updates, and the deliberately unpinned npm globals
-    # (opencode-ai, @openchamber/web, backlog.md) are all picked up here.
+    # (@opencode/cli, @openchamber/web, backlog.md) are all picked up here.
     - cron: '17 4 * * 1'
   workflow_dispatch:
     inputs:

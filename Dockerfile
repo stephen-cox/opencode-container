@@ -127,14 +127,22 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin s
 
 # `npm cache clean` matters here: `npm install -g` leaves the downloaded
 # tarballs in /root/.npm, and without the clean they are committed into this
-# layer for the life of the image.
+# layer for the life of the image. OpenCode 2.x ships as `@opencode/cli`
+# (`opencode-ai` is the 1.x line, which OpenChamber 2.x refuses to use). Its
+# postinstall hardlinks or copies the matching platform binary into its own
+# bin/, so the per-platform packages can be dropped afterwards.
 RUN npm install -g --omit=dev \
         backlog.md \
-        opencode-ai \
+        @opencode/cli \
         @openchamber/web \
         chrome-devtools-mcp \
     && npm cache clean --force \
-    && rm -rf /usr/lib/node_modules/opencode-ai/node_modules/*-baseline
+    && rm -rf /usr/lib/node_modules/@opencode/cli/node_modules/@opencode/cli-* \
+    && opencode_version="$(opencode --version)" \
+    && case "${opencode_version}" in \
+        "opencode v2."*) echo "installed ${opencode_version}" ;; \
+        *) echo "ERROR: expected OpenCode 2.x, got ${opencode_version}" >&2; exit 1 ;; \
+    esac
 
 ARG DEV_UID=1000
 ARG DEV_GID=1000

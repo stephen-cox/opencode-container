@@ -441,7 +441,7 @@ image's default user and exactly matches the maintained source document.
 
 The weekly run (Mondays 04:17 UTC) builds with `no-cache` and `pull`, which is
 what picks up new Ubuntu patches (including `openssh-server` and `mosh`
-security updates) and new `opencode-ai`, `@openchamber/web` and `backlog.md`
+security updates) and new `@opencode/cli`, `@openchamber/web` and `backlog.md`
 releases; a cached rebuild would change nothing. Every build publishes SBOM
 and provenance attestations.
 
